@@ -50,6 +50,13 @@ class Settings:
     weather_enabled: bool = True
     weather_base_url: str = "https://api.neonhail.cloud/v0"
     weather_timeout_seconds: float = 30.0
+    anime_enabled: bool = True
+    anime_base_url: str = "https://graphql.anilist.co"
+    anime_title_search_fallback_url: str = "https://api.jikan.moe/v4/anime"
+    anime_timeout_seconds: float = 30.0
+    anime_candidate_limit: int = 5
+    anime_character_limit: int = 50
+    anime_schedule_limit: int = 50
     resolver_backend: str = "openai_compatible"
     resolver_base_url: str = "http://localhost:11434/v1"
     resolver_model: str = "qwen3:8b"
@@ -148,6 +155,14 @@ class Settings:
             raise ConfigError("search_inline_content_max_characters must be at least 1000.")
         if self.weather_timeout_seconds <= 0:
             raise ConfigError("weather_timeout_seconds must be positive.")
+        if self.anime_timeout_seconds <= 0:
+            raise ConfigError("anime_timeout_seconds must be positive.")
+        if not 1 <= self.anime_candidate_limit <= 10:
+            raise ConfigError("anime_candidate_limit must be between 1 and 10.")
+        if not 1 <= self.anime_character_limit <= 50:
+            raise ConfigError("anime_character_limit must be between 1 and 50.")
+        if not 1 <= self.anime_schedule_limit <= 50:
+            raise ConfigError("anime_schedule_limit must be between 1 and 50.")
 
     @property
     def expanded_database_path(self) -> Path:
@@ -170,6 +185,13 @@ class Settings:
             "weather_enabled": self.weather_enabled,
             "weather_base_url": self.weather_base_url,
             "weather_timeout_seconds": self.weather_timeout_seconds,
+            "anime_enabled": self.anime_enabled,
+            "anime_base_url": self.anime_base_url,
+            "anime_title_search_fallback_url": self.anime_title_search_fallback_url,
+            "anime_timeout_seconds": self.anime_timeout_seconds,
+            "anime_candidate_limit": self.anime_candidate_limit,
+            "anime_character_limit": self.anime_character_limit,
+            "anime_schedule_limit": self.anime_schedule_limit,
             "resolver_backend": self.resolver_backend,
             "resolver_base_url": self.resolver_base_url,
             "resolver_model": self.resolver_model,

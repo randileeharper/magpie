@@ -15,6 +15,11 @@ import httpx
 from ..config import Settings
 from ..errors import ResolverError
 from ..models import (
+    AnimeCandidate,
+    AnimeField,
+    AnimeRequest,
+    AnimeRequestKind,
+    CharacterCredit,
     EvidenceItem,
     PlanningContext,
     QueryProposal,
@@ -54,16 +59,17 @@ class OpenAICompatibleResolverClient:
             system=(
                 "Classify the request for an information-retrieval agent. Return compact JSON only. "
                 "Use route=weather only for requests asking about weather conditions or a weather forecast. "
+                "Use route=anime for requests about anime titles, anime schedules, characters, or voice actors. "
                 "For weather, extract or infer the primary five-digit US ZIP code when confident; otherwise use null. "
                 "Use weather_kind=conditions for current/outside/right-now requests and forecast for future outlooks. "
-                "For web_research, weather_kind and zip_code must be null."
+                "For anime and web_research, weather_kind and zip_code must be null."
             ),
             user={"question": question},
             schema_name="magpie_route_request",
             schema={
                 "type": "object",
                 "properties": {
-                    "route": {"type": "string", "enum": ["web_research", "weather"]},
+                    "route": {"type": "string", "enum": ["web_research", "weather", "anime"]},
                     "weather_kind": {"type": ["string", "null"], "enum": ["conditions", "forecast", None]},
                     "zip_code": {"type": ["string", "null"]},
                 },
@@ -79,12 +85,148 @@ class OpenAICompatibleResolverClient:
         if not zip_code or len(zip_code) != 5 or not zip_code.isdigit():
             zip_code = None
         if route != RequestRoute.WEATHER:
-            return RouteDecision(route=RequestRoute.WEB_RESEARCH)
+            return RouteDecision(route=route)
         try:
             weather_kind = WeatherKind(str(payload.get("weather_kind")))
         except ValueError:
             weather_kind = WeatherKind.CONDITIONS
         return RouteDecision(route=route, weather_kind=weather_kind, zip_code=zip_code)
+
+    def classify_anime_request(self, question: str) -> AnimeRequest:
+        payload = self._ask_json(
+            "classify_anime_request",
+            system=(
+                "Classify an anime information request. Return compact JSON only. "
+                "Use lookup for factual questions about a specific anime, credits for character or voice-actor "
+                "questions, and schedule for daily episode airing schedules. For lookup, select only fields needed to "
+                "answer the question. Extract the anime title and character fragment when applicable. "
+                "Use null or an empty list when not applicable."
+            ),
+            user={"question": question},
+            schema_name="magpie_anime_request",
+            schema={
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["lookup", "credits", "schedule"]},
+                    "title_query": {"type": ["string", "null"]},
+                    "character_query": {"type": ["string", "null"]},
+                    "requested_fields": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": [item.value for item in AnimeField]},
+                        "maxItems": 6,
+                        "uniqueItems": True,
+                    },
+                },
+                "required": ["kind", "title_query", "character_query", "requested_fields"],
+                "additionalProperties": False,
+            },
+        )
+        try:
+            kind = AnimeRequestKind(str(payload.get("kind")))
+        except ValueError:
+            kind = AnimeRequestKind.LOOKUP
+        title = str(payload["title_query"]).strip() if payload.get("title_query") else None
+        character = str(payload["character_query"]).strip() if payload.get("character_query") else None
+        fields: list[AnimeField] = []
+        for value in payload.get("requested_fields", []):
+            try:
+                field = AnimeField(str(value))
+            except ValueError:
+                continue
+            if field not in fields:
+                fields.append(field)
+        if kind == AnimeRequestKind.SCHEDULE:
+            fields = []
+        elif kind == AnimeRequestKind.CREDITS and character:
+            fields = []
+        elif fields:
+            kind = AnimeRequestKind.LOOKUP
+        if kind == AnimeRequestKind.LOOKUP and not fields:
+            fields = [AnimeField.DESCRIPTION]
+        return AnimeRequest(kind, title, character, fields)
+
+    def refine_anime_title_queries(self, question: str, attempted_query: str) -> list[str]:
+        payload = self._ask_json(
+            "refine_anime_title_queries",
+            system=(
+                "Produce up to three distinct concise AniList catalog search titles after the first search returned no "
+                "results. Include useful English spelling variants and a known romaji title when possible. "
+                "Remove season wording when necessary so search can return the franchise entries; the next step will "
+                "select the correct season. Return compact JSON only."
+            ),
+            user={"question": question, "attempted_query": attempted_query},
+            schema_name="magpie_anime_title_queries",
+            schema={
+                "type": "object",
+                "properties": {
+                    "title_queries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "uniqueItems": True,
+                    }
+                },
+                "required": ["title_queries"],
+                "additionalProperties": False,
+            },
+        )
+        queries = self._string_list(payload.get("title_queries"))
+        return queries[:3] or [attempted_query]
+
+    def select_anime_candidate(self, question: str, candidates: list[AnimeCandidate]) -> int | None:
+        if not candidates:
+            return None
+        payload = self._ask_json(
+            "select_anime_candidate",
+            system=(
+                "Select the anime candidate that best matches the request. Compare English, romaji, and native titles. "
+                "Return null only when none plausibly match. Return compact JSON only."
+            ),
+            user={"question": question, "candidates": [
+                {
+                    "anime_id": item.anime_id,
+                    "english": item.english_title,
+                    "romaji": item.romaji_title,
+                    "native": item.native_title,
+                    "format": item.format,
+                    "year": item.season_year,
+                }
+                for item in candidates
+            ]},
+            schema_name="magpie_anime_candidate",
+            schema={
+                "type": "object",
+                "properties": {"anime_id": {"type": ["integer", "null"]}},
+                "required": ["anime_id"],
+                "additionalProperties": False,
+            },
+        )
+        selected = payload.get("anime_id")
+        allowed = {item.anime_id for item in candidates}
+        return selected if isinstance(selected, int) and selected in allowed else None
+
+    def select_character(self, query: str, credits: list[CharacterCredit]) -> str | None:
+        if not credits:
+            return None
+        payload = self._ask_json(
+            "select_anime_character",
+            system=(
+                "Select the character whose full name best matches the user's partial character name. "
+                "Return null when none plausibly match. Return compact JSON only."
+            ),
+            user={"character_query": query, "characters": [item.character_name for item in credits]},
+            schema_name="magpie_anime_character",
+            schema={
+                "type": "object",
+                "properties": {"character_name": {"type": ["string", "null"]}},
+                "required": ["character_name"],
+                "additionalProperties": False,
+            },
+        )
+        selected = payload.get("character_name")
+        allowed = {item.character_name for item in credits}
+        return selected if isinstance(selected, str) and selected in allowed else None
 
     def propose_query(self, question: str, context: PlanningContext | list[str]) -> QueryProposal:
         if isinstance(context, list):

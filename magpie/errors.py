@@ -37,6 +37,10 @@ class WeatherError(MagpieError):
     """Raised when a specialized weather request fails."""
 
 
+class AnimeError(MagpieError):
+    """Raised when a specialized anime request fails."""
+
+
 class DependencyError(MagpieError):
     """Raised when an optional runtime dependency is unavailable or uninitialized."""
 

@@ -11,7 +11,8 @@ from .providers.exa import ExaSearchClient
 from .providers.fake import FakeFetcher, FakeResolverClient, FakeSearchClient
 from .providers.openai_compatible import OpenAICompatibleResolverClient
 from .providers.neonhail import NeonHailWeatherClient
-from .providers.base import Fetcher, SearchClient, WeatherClient
+from .providers.anilist import AniListClient
+from .providers.base import AnimeClient, Fetcher, SearchClient, WeatherClient
 from .service import ResearchService
 from .storage import SQLiteStorage
 
@@ -24,6 +25,7 @@ class AppContext:
     search_client: SearchClient
     fetcher: Fetcher
     weather_client: WeatherClient | None
+    anime_client: AnimeClient | None
 
 
 def build_app(config_path: str | None = None) -> AppContext:
@@ -51,6 +53,7 @@ def build_app(config_path: str | None = None) -> AppContext:
         resolver = OpenAICompatibleResolverClient(settings=settings)
 
     weather_client = NeonHailWeatherClient(settings=settings) if settings.weather_enabled else None
+    anime_client = AniListClient(settings=settings) if settings.anime_enabled else None
     service = ResearchService(
         storage=storage,
         resolver=resolver,
@@ -58,6 +61,7 @@ def build_app(config_path: str | None = None) -> AppContext:
         fetcher=fetcher,
         settings=settings,
         weather_client=weather_client,
+        anime_client=anime_client,
     )
     return AppContext(
         settings=settings,
@@ -66,4 +70,5 @@ def build_app(config_path: str | None = None) -> AppContext:
         search_client=search_client,
         fetcher=fetcher,
         weather_client=weather_client,
+        anime_client=anime_client,
     )

@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 
 from magpie.config import Settings
-from magpie.models import EvidenceItem, RequestRoute, WeatherKind
+from magpie.models import AnimeField, AnimeRequestKind, EvidenceItem, RequestRoute, WeatherKind
 from magpie.providers.openai_compatible import (
     OpenAICompatibleResolverClient,
     reasoning_request_options,
@@ -306,6 +306,67 @@ class OpenAICompatibleResolverTests(unittest.TestCase):
 
         self.assertEqual(decision.route, RequestRoute.WEATHER)
         self.assertIsNone(decision.zip_code)
+
+    def test_anime_request_selects_only_needed_lookup_fields(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": (
+                    '{"kind":"lookup","title_query":"Ascendance of a Bookworm season 2",'
+                    '"character_query":null,"requested_fields":["episodes"]}'
+                )}}]},
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(tmpdir),
+                transport=httpx.MockTransport(handler),
+            )
+            request = client.classify_anime_request(
+                "how many episodes are in season 2 of ascendence of a bookworm"
+            )
+
+        self.assertEqual(request.kind, AnimeRequestKind.LOOKUP)
+        self.assertEqual(request.requested_fields, [AnimeField.EPISODES])
+
+    def test_lookup_fields_override_contradictory_anime_kind(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": (
+                    '{"kind":"credits","title_query":"Bookworm","character_query":null,'
+                    '"requested_fields":["episodes"]}'
+                )}}]},
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(tmpdir),
+                transport=httpx.MockTransport(handler),
+            )
+            request = client.classify_anime_request("how many episodes are in Bookworm?")
+
+        self.assertEqual(request.kind, AnimeRequestKind.LOOKUP)
+
+    def test_character_credit_intent_overrides_spurious_lookup_fields(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": (
+                    '{"kind":"credits","title_query":"Yakuza Fiance","character_query":"Kirishima",'
+                    '"requested_fields":["episodes","end_date"]}'
+                )}}]},
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(tmpdir),
+                transport=httpx.MockTransport(handler),
+            )
+            request = client.classify_anime_request("voice actor for Kirishima in Yakuza Fiance")
+
+        self.assertEqual(request.kind, AnimeRequestKind.CREDITS)
+        self.assertEqual(request.requested_fields, [])
 
     def test_resolver_debug_log_is_cleared_and_written(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:

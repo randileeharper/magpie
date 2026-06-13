@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 import httpx
 
 from magpie.config import Settings
-from magpie.models import FreshnessClass, SearchRequest, WeatherKind
+from magpie.models import AnimeField, FreshnessClass, SearchRequest, WeatherKind
+from magpie.providers.anilist import AniListClient
 from magpie.providers.exa import ExaSearchClient
 from magpie.providers.neonhail import NeonHailWeatherClient
 
@@ -115,6 +118,117 @@ class NeonHailProviderTests(unittest.TestCase):
 
         self.assertIn("Period 3", report.answer)
         self.assertNotIn("Period 4", report.answer)
+
+
+class AniListProviderTests(unittest.TestCase):
+    def test_title_search_uses_jikan_only_as_discovery_fallback(self) -> None:
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            if request.method == "GET":
+                return httpx.Response(200, json={"data": [{
+                    "title": "Raise wa Tanin ga Ii",
+                    "title_english": "Yakuza Fiancé: Raise wa Tanin ga Ii",
+                    "synopsis": "must not be retained",
+                }]})
+            search = json.loads(request.content)["variables"]["search"]
+            if search == "Raise wa Tanin ga Ii":
+                return httpx.Response(200, json={"data": {"Page": {"media": [{
+                    "id": 170468,
+                    "title": {"english": "Yakuza Fiancé", "romaji": "Raise wa Tanin ga Ii", "native": "来世は他人がいい"},
+                    "format": "TV",
+                    "seasonYear": 2024,
+                }]}}})
+            return httpx.Response(200, json={"data": {"Page": {"media": []}}})
+
+        client = AniListClient(
+            Settings(
+                anime_base_url="https://anilist.test",
+                anime_title_search_fallback_url="https://jikan.test/anime",
+            ),
+            httpx.MockTransport(handler),
+        )
+        candidates = client.search_anime("Yakuza Fiancée")
+
+        self.assertEqual(candidates[0].anime_id, 170468)
+        self.assertTrue(any("jikan.test" in call for call in calls))
+
+    def test_media_info_requests_and_returns_only_compact_fields(self) -> None:
+        captured_query = ""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal captured_query
+            captured_query = json.loads(request.content)["query"]
+            return httpx.Response(200, json={"data": {"Media": {
+                "id": 170468,
+                "title": {"english": "Yakuza Fiancé", "romaji": "Raise wa Tanin ga Ii"},
+                "description": "A <b>yakuza romance</b>.",
+                "format": "TV",
+                "status": "FINISHED",
+                "episodes": 12,
+                "seasonYear": 2024,
+            }}})
+
+        client = AniListClient(Settings(anime_base_url="https://anilist.test"), httpx.MockTransport(handler))
+        report = client.get_anime_info(
+            170468,
+            [AnimeField.DESCRIPTION, AnimeField.FORMAT, AnimeField.SEASON_YEAR, AnimeField.EPISODES, AnimeField.STATUS],
+        )
+
+        self.assertEqual(
+            report.answer,
+            "Yakuza Fiancé\nA yakuza romance.\nFormat: Tv\nSeason year: 2024\nEpisodes: 12\nStatus: Finished",
+        )
+        self.assertNotIn("score", captured_query)
+        self.assertNotIn("image", captured_query)
+        self.assertEqual(report.reference.source_kind.value, "anilist_api")
+
+    def test_lookup_requests_only_selected_field(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            query = json.loads(request.content)["query"]
+            self.assertIn("episodes", query)
+            self.assertNotIn("description", query)
+            self.assertNotIn("averageScore", query)
+            return httpx.Response(200, json={"data": {"Media": {
+                "id": 1,
+                "title": {"english": "Bookworm Season 2", "romaji": "Honzuki 2"},
+                "episodes": 12,
+            }}})
+
+        client = AniListClient(Settings(anime_base_url="https://anilist.test"), httpx.MockTransport(handler))
+        report = client.get_anime_info(1, [AnimeField.EPISODES])
+
+        self.assertEqual(report.answer, "Bookworm Season 2\nEpisodes: 12")
+
+    def test_schedule_converts_to_system_timezone_and_omits_metadata(self) -> None:
+        previous_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "America/Los_Angeles"
+        time.tzset()
+        try:
+            def handler(request: httpx.Request) -> httpx.Response:
+                body = json.loads(request.content)
+                self.assertNotIn("description", body["query"])
+                return httpx.Response(200, json={"data": {"Page": {"airingSchedules": [{
+                    "airingAt": 1781395200,
+                    "episode": 3,
+                    "media": {"id": 1, "title": {"english": "Example Anime", "romaji": "Example"}},
+                }]}}})
+
+            client = AniListClient(
+                Settings(anime_base_url="https://anilist.test"),
+                httpx.MockTransport(handler),
+            )
+            report = client.get_daily_schedule()
+        finally:
+            if previous_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = previous_tz
+            time.tzset()
+
+        self.assertIn("Example Anime, episode 3", report.answer)
+        self.assertNotIn("anilist:", report.answer)
 
 
 if __name__ == "__main__":

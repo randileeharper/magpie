@@ -9,14 +9,14 @@ from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from pathlib import Path
 
-from .errors import FetchError, ResearchCancelled, ResolverError, WeatherError
+from .errors import AnimeError, FetchError, ResearchCancelled, ResolverError, WeatherError
 from .config import Settings
 from .models import (
-    EvidenceItem, FreshnessClass, PlanningContext, ResearchErrorResult, ResearchRequest,
-    ResearchResult, RequestRoute, ResponseDetail, RunBudget, SearchRequest, SearchResultRecord,
-    SourceKind, StopReason, SynthesisDraft, WeatherKind, to_jsonable,
+    AnimeReport, AnimeRequestKind, EvidenceItem, FreshnessClass, PlanningContext, ResearchErrorResult,
+    ResearchRequest, ResearchResult, RequestRoute, ResponseDetail, RunBudget, SearchRequest,
+    SearchResultRecord, SourceKind, StopReason, SynthesisDraft, WeatherKind, to_jsonable,
 )
-from .providers.base import Fetcher, ResolverClient, SearchClient, WeatherClient
+from .providers.base import AnimeClient, Fetcher, ResolverClient, SearchClient, WeatherClient
 from .storage import SQLiteStorage, canonicalize_url, normalize_query
 from .text import valid_unicode
 
@@ -54,6 +54,7 @@ class ResearchService:
     fetcher: Fetcher
     settings: Settings
     weather_client: WeatherClient | None = None
+    anime_client: AnimeClient | None = None
     _resolver_semaphore: threading.BoundedSemaphore = field(default=_GLOBAL_RESOLVER_GATE)
 
     def cancel_run(self, run_id: str) -> None:
@@ -85,10 +86,9 @@ class ResearchService:
 
         try:
             self._raise_if_cancelled(run_id)
-            if self.weather_client is not None:
-                weather_result = self._try_weather_route(run_id, request, timings, warnings)
-                if weather_result is not None:
-                    return weather_result
+            specialized_result = self._try_specialized_route(run_id, request, timings, warnings)
+            if specialized_result is not None:
+                return specialized_result
             cached_ids = self.storage.find_fresh_source_ids_for_exact_query(
                 normalize_query(request.question), self._min_fetched_at(freshness)
             )
@@ -184,9 +184,11 @@ class ResearchService:
                 debug=self._build_debug(run_id, request, timings),
             )
 
-    def _try_weather_route(
+    def _try_specialized_route(
         self, run_id: str, request: ResearchRequest, timings: dict[str, list[float]], warnings: list[str]
     ) -> ResearchResult | None:
+        if self.weather_client is None and self.anime_client is None:
+            return None
         try:
             decision, elapsed = self._call_resolver("route_request", request.question)
             self._record_timing(timings, "resolver.route_request", elapsed)
@@ -200,7 +202,9 @@ class ResearchService:
             warnings.append(f"Request routing failed; used web research instead: {exc}")
             self._trace(run_id, "REQUEST ROUTING FALLBACK", [f"error: {exc}"])
             return None
-        if decision.route != RequestRoute.WEATHER:
+        if decision.route == RequestRoute.ANIME and self.anime_client is not None:
+            return self._try_anime_route(run_id, request, timings, warnings)
+        if decision.route != RequestRoute.WEATHER or self.weather_client is None:
             return None
         if not decision.zip_code:
             warnings.append("Weather route could not determine a US ZIP code; used web research instead.")
@@ -227,6 +231,87 @@ class ResearchService:
             answer=report.answer,
             references=references,
             warnings=warnings,
+            stop_reason=StopReason.SPECIALIZED_ROUTE,
+            debug=self._build_debug(run_id, request, timings),
+        )
+
+    def _try_anime_route(
+        self, run_id: str, request: ResearchRequest, timings: dict[str, list[float]], warnings: list[str]
+    ) -> ResearchResult | None:
+        try:
+            anime_request, elapsed = self._call_resolver("classify_anime_request", request.question)
+            self._record_timing(timings, "resolver.classify_anime_request", elapsed)
+            self._trace(run_id, "ANIME REQUEST CLASSIFIED", [
+                f"kind: {anime_request.kind.value}",
+                f"title_query: {anime_request.title_query or ''}",
+                f"character_query: {anime_request.character_query or ''}",
+                f"requested_fields: {', '.join(item.value for item in anime_request.requested_fields)}",
+                f"elapsed_ms: {elapsed}",
+            ])
+            started = perf_counter()
+            if anime_request.kind == AnimeRequestKind.SCHEDULE:
+                report = self.anime_client.get_daily_schedule()
+            else:
+                if not anime_request.title_query:
+                    raise AnimeError("Anime title could not be determined.")
+                candidates = self.anime_client.search_anime(anime_request.title_query)
+                if not candidates:
+                    refined_queries, elapsed = self._call_resolver(
+                        "refine_anime_title_queries", request.question, anime_request.title_query
+                    )
+                    self._record_timing(timings, "resolver.refine_anime_title_queries", elapsed)
+                    for refined_query in refined_queries:
+                        if refined_query == anime_request.title_query:
+                            continue
+                        candidates = self.anime_client.search_anime(refined_query)
+                        if candidates:
+                            break
+                if len(candidates) == 1:
+                    selected_id = candidates[0].anime_id
+                else:
+                    selected_id, elapsed = self._call_resolver(
+                        "select_anime_candidate", request.question, candidates
+                    )
+                    self._record_timing(timings, "resolver.select_anime_candidate", elapsed)
+                if selected_id is None:
+                    raise AnimeError("No AniList title candidate matched the request.")
+                if anime_request.kind == AnimeRequestKind.LOOKUP:
+                    report = self.anime_client.get_anime_info(selected_id, anime_request.requested_fields)
+                else:
+                    title, credits, reference = self.anime_client.get_credits(selected_id)
+                    if anime_request.character_query:
+                        character_name, elapsed = self._call_resolver(
+                            "select_character", anime_request.character_query, credits
+                        )
+                        self._record_timing(timings, "resolver.select_anime_character", elapsed)
+                        credit = next(
+                            (item for item in credits if item.character_name == character_name), None
+                        )
+                        if credit is None:
+                            raise AnimeError("No character matched the requested name.")
+                        answer = (
+                            f"{credit.character_name} in {title} is voiced in Japanese by "
+                            f"{', '.join(credit.voice_actor_names)}."
+                        )
+                    else:
+                        answer = f"Japanese voice cast for {title}:\n" + "\n".join(
+                            f"{item.character_name} - {', '.join(item.voice_actor_names)}"
+                            for item in credits[:15]
+                        )
+                    report = AnimeReport(
+                        f"Japanese voice cast information for {title}.", answer, reference
+                    )
+            self._record_timing(timings, "anime", round((perf_counter() - started) * 1000, 2))
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"Specialized anime lookup failed; used web research instead: {exc}")
+            self._trace(run_id, "ANIME ROUTE FALLBACK", [f"error: {exc}"])
+            return None
+        references = [report.reference][: max(0, request.max_references)]
+        self.storage.save_final_answer(run_id, report.summary, report.answer, references)
+        self.storage.update_run_status(run_id, "completed", StopReason.SPECIALIZED_ROUTE.value)
+        self._trace(run_id, "COMPLETED", ["status: ok", "route: anime"])
+        return ResearchResult(
+            "ok", run_id, report.summary, report.answer, references, warnings=warnings,
             stop_reason=StopReason.SPECIALIZED_ROUTE,
             debug=self._build_debug(run_id, request, timings),
         )

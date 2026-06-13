@@ -7,6 +7,11 @@ from dataclasses import dataclass, field
 
 from ..models import (
     EvidenceItem,
+    AnimeCandidate,
+    AnimeField,
+    AnimeRequest,
+    AnimeRequestKind,
+    CharacterCredit,
     FetchedSource,
     PlanningContext,
     QueryProposal,
@@ -49,6 +54,18 @@ class FakeResolverClient:
 
     def route_request(self, question: str) -> RouteDecision:
         return RouteDecision(route=RequestRoute.WEB_RESEARCH)
+
+    def classify_anime_request(self, question: str) -> AnimeRequest:
+        return AnimeRequest(AnimeRequestKind.LOOKUP, title_query=question, requested_fields=[AnimeField.DESCRIPTION])
+
+    def refine_anime_title_queries(self, question: str, attempted_query: str) -> list[str]:
+        return [attempted_query]
+
+    def select_anime_candidate(self, question: str, candidates: list[AnimeCandidate]) -> int | None:
+        return candidates[0].anime_id if candidates else None
+
+    def select_character(self, query: str, credits: list[CharacterCredit]) -> str | None:
+        return credits[0].character_name if credits else None
 
     def propose_query(self, question: str, context: PlanningContext) -> QueryProposal:
         if context.remaining_questions:

@@ -51,7 +51,7 @@ def _load_client_sdk() -> dict[str, Any]:
 def build_agent_card(base_url: str) -> AgentCard:
     return AgentCard(
         name="Magpie Research Worker",
-        description="Bounded natural-language web research with grounded references.",
+        description="Natural-language information retrieval with bounded research and specialized API routes.",
         version="0.2.0",
         supported_interfaces=[
             AgentInterface(url=f"{base_url.rstrip('/')}/a2a", protocol_binding=TransportProtocol.JSONRPC.value,
@@ -63,9 +63,10 @@ def build_agent_card(base_url: str) -> AgentCard:
         default_input_modes=["text/plain"],
         default_output_modes=["application/json"],
         skills=[AgentSkill(
-            id="magpie_research", name="Natural-language research",
-            description="Research a question and return a grounded bounded answer.",
-            tags=["research", "search"], examples=["Who is the mayor of New York?"],
+            id="magpie_research", name="Natural-language information retrieval",
+            description="Answer a question using bounded web research or a specialized information API.",
+            tags=["research", "search", "weather", "anime"],
+            examples=["Who is the mayor of New York?", "What anime airs today?"],
             input_modes=["text/plain"], output_modes=["application/json"],
         )],
     )

@@ -34,6 +34,8 @@ without drowning in context.
 - returns compact answers with grounded references
 - checks sources incrementally until the answer is usable or a run budget ends
 - routes current-condition and forecast requests to the Neon Hail weather API
+- answers anime facts, Japanese voice-cast questions, and local-time airing
+  schedules through AniList
 - caches useful source snapshots and completed answers in SQLite
 - exposes durable, cancellable research runs through A2A
 - records resolver, fetch, timing, and run diagnostics for debugging
@@ -141,8 +143,15 @@ same run recorded in SQLite.
 
 Every request begins with a compact resolver routing call. Weather requests
 with a confident five-digit US ZIP code go directly to Neon Hail and bypass web
-search and synthesis. If routing, ZIP normalization, or the weather API fails,
-Magpie falls back to general web research.
+search and synthesis. Anime requests are classified a second time into factual
+lookup, credits, or schedule operations and then sent to AniList. For factual
+lookups, the resolver selects from an allowlist of API fields; deterministic
+code builds the GraphQL query and returns only the requested values. Daily anime
+schedules use Japanese broadcast times converted to the system timezone.
+Jikan is used only as a fallback title-discovery index when AniList cannot
+resolve a spelling variant; final anime data and references still come from
+AniList. If a specialized route fails, Magpie falls back to general web
+research.
 
 General research follows a bounded incremental loop:
 
@@ -213,6 +222,8 @@ content, and model output; do not publish them without reviewing their contents.
   interpretation.
 - Specialized API routes should bypass general research when they can produce a
   better grounded result.
+- API clients should request and retain only fields needed for the final answer;
+  provider metadata must not leak into resolver prompts or user-facing output.
 - Do not cache rejected sources as answer candidates.
 - Do not silently retry requests that may already have been accepted.
 - The SQLite schema is versioned. Incompatible pre-release databases may be

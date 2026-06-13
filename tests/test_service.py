@@ -7,6 +7,12 @@ from pathlib import Path
 from magpie.config import Settings
 from magpie.errors import FetchError
 from magpie.models import (
+    AnimeCandidate,
+    AnimeField,
+    AnimeReport,
+    AnimeRequest,
+    AnimeRequestKind,
+    CharacterCredit,
     FetchedSource,
     FreshnessClass,
     Reference,
@@ -176,9 +182,55 @@ class FakeWeatherClient:
         )
 
 
+class AnimeRoutingResolver(FakeResolverClient):
+    def __init__(self, kind=AnimeRequestKind.CREDITS) -> None:
+        super().__init__()
+        self.kind = kind
+
+    def route_request(self, question):
+        return RouteDecision(RequestRoute.ANIME)
+
+    def classify_anime_request(self, question):
+        if self.kind == AnimeRequestKind.SCHEDULE:
+            return AnimeRequest(self.kind)
+        return AnimeRequest(self.kind, "Yakuza Fiance", "Kirishima", [AnimeField.DESCRIPTION])
+
+    def select_anime_candidate(self, question, candidates):
+        return candidates[0].anime_id
+
+    def select_character(self, query, credits):
+        return "Kirishima Miyama"
+
+
+class FakeAnimeClient:
+    def search_anime(self, title_query):
+        return [AnimeCandidate(170468, "Yakuza Fiancé", "Raise wa Tanin ga Ii", "来世は他人がいい", "TV", 2024)]
+
+    def get_anime_info(self, anime_id, requested_fields):
+        raise AssertionError("wrong anime operation")
+
+    def get_credits(self, anime_id):
+        return (
+            "Yakuza Fiancé",
+            [
+                CharacterCredit("Kirishima Miyama", ["Akira Ishida"]),
+                CharacterCredit("Yoshino Somei", ["Hitomi Ueda"]),
+            ],
+            Reference("anime", "Yakuza Fiancé", "https://anilist.co/anime/170468", "AniList", None, None),
+        )
+
+    def get_daily_schedule(self):
+        return AnimeReport(
+            "Today's anime schedule.",
+            "Anime airing schedule for Saturday (PDT):\n5:00 PM - Example Anime, episode 3",
+            Reference("schedule", "AniList schedule", "https://anilist.co", "AniList", None, None),
+        )
+
+
 class ServiceTests(unittest.TestCase):
     def _service(
-        self, tmpdir: str, resolver=None, search_client=None, fetcher=None, weather_client=None
+        self, tmpdir: str, resolver=None, search_client=None, fetcher=None, weather_client=None,
+        anime_client=None,
     ) -> ResearchService:
         storage = SQLiteStorage(Path(tmpdir) / "magpie.db")
         storage.initialize()
@@ -190,7 +242,41 @@ class ServiceTests(unittest.TestCase):
             fetcher=fetcher or FakeFetcher(),
             settings=settings,
             weather_client=weather_client,
+            anime_client=anime_client,
         )
+
+    def test_anime_credit_route_returns_only_selected_credit(self) -> None:
+        class ExplodingSearch(FakeSearchClient):
+            def search(self, request):
+                raise AssertionError("anime route must not search")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(
+                tmpdir,
+                resolver=AnimeRoutingResolver(),
+                search_client=ExplodingSearch(),
+                anime_client=FakeAnimeClient(),
+            )
+            result = service.research(
+                ResearchRequest(question="voice actor for Kirishima in Yakuza Fiance")
+            )
+
+        self.assertEqual(
+            result.answer,
+            "Kirishima Miyama in Yakuza Fiancé is voiced in Japanese by Akira Ishida.",
+        )
+        self.assertNotIn("Yoshino", result.answer)
+
+    def test_anime_schedule_route_bypasses_title_disambiguation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(
+                tmpdir,
+                resolver=AnimeRoutingResolver(AnimeRequestKind.SCHEDULE),
+                anime_client=FakeAnimeClient(),
+            )
+            result = service.research(ResearchRequest(question="anime schedule for today"))
+
+        self.assertIn("Example Anime, episode 3", result.answer)
 
     def test_weather_route_bypasses_web_research(self) -> None:
         class ExplodingSearch(FakeSearchClient):

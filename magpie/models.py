@@ -33,16 +33,41 @@ class SourceKind(str, Enum):
     PAGE_FETCH = "page_fetch"
     SEARCH_RESULT_FALLBACK = "search_result_fallback"
     WEATHER_API = "weather_api"
+    ANILIST_API = "anilist_api"
 
 
 class RequestRoute(str, Enum):
     WEB_RESEARCH = "web_research"
     WEATHER = "weather"
+    ANIME = "anime"
 
 
 class WeatherKind(str, Enum):
     CONDITIONS = "conditions"
     FORECAST = "forecast"
+
+
+class AnimeRequestKind(str, Enum):
+    LOOKUP = "lookup"
+    CREDITS = "credits"
+    SCHEDULE = "schedule"
+
+
+class AnimeField(str, Enum):
+    DESCRIPTION = "description"
+    EPISODES = "episodes"
+    DURATION = "duration"
+    STATUS = "status"
+    FORMAT = "format"
+    SEASON = "season"
+    SEASON_YEAR = "season_year"
+    START_DATE = "start_date"
+    END_DATE = "end_date"
+    GENRES = "genres"
+    STUDIOS = "studios"
+    SOURCE_MATERIAL = "source_material"
+    AVERAGE_SCORE = "average_score"
+    NEXT_AIRING_EPISODE = "next_airing_episode"
 
 
 @dataclass(slots=True)
@@ -114,6 +139,37 @@ class RouteDecision:
     route: RequestRoute
     weather_kind: WeatherKind | None = None
     zip_code: str | None = None
+
+
+@dataclass(slots=True)
+class AnimeRequest:
+    kind: AnimeRequestKind
+    title_query: str | None = None
+    character_query: str | None = None
+    requested_fields: list[AnimeField] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class AnimeCandidate:
+    anime_id: int
+    english_title: str | None
+    romaji_title: str | None
+    native_title: str | None
+    format: str | None
+    season_year: int | None
+
+
+@dataclass(slots=True)
+class CharacterCredit:
+    character_name: str
+    voice_actor_names: list[str]
+
+
+@dataclass(slots=True)
+class AnimeReport:
+    summary: str
+    answer: str
+    reference: Reference
 
 
 @dataclass(slots=True)
