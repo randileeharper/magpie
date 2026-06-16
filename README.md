@@ -11,7 +11,7 @@ for a conversational agent to present in its own voice.
 ## Design Philosophy
 
 General-purpose conversational agents should not need to carry every tool,
-provider, and research workflow in their prompt. That becomes especially slow
+provider, and lookup workflow in their prompt. That becomes especially slow
 and unreliable when the system is backed by a smaller local model.
 
 Magpie keeps that work inside a dedicated information-retrieval agent:
@@ -30,7 +30,7 @@ without drowning in context.
 
 ## What It Does
 
-- researches natural-language questions using web search and fetched pages
+- answers natural-language questions using web search and fetched pages
 - returns compact answers with grounded references
 - checks sources incrementally until the answer is usable or a run budget ends
 - routes current-condition and forecast requests to the Neon Hail weather API
@@ -38,7 +38,7 @@ without drowning in context.
   schedules through AniList
 - returns compact category news digests from publisher RSS and Atom feeds
 - caches useful source snapshots and completed answers in SQLite
-- exposes durable, cancellable research runs through A2A
+- exposes durable, cancellable ask runs through A2A
 - records resolver, fetch, timing, and run diagnostics for debugging
 
 ## Requirements
@@ -101,13 +101,15 @@ magpie serve
 Ask questions from the CLI:
 
 ```bash
-magpie research "Who is the mayor of New York?"
-magpie research "How do I make homemade sourdough bread?"
-magpie research "What's the weather in 98230?"
-magpie research "Give me the forecast for 98230" --json
-magpie research "What's the latest AI news?"
-magpie research "world news from yesterday" --json
-magpie research "Compare the latest policies" --json --debug
+magpie ask "Who is the mayor of New York?"
+magpie ask "How do I make homemade sourdough bread?"
+magpie ask "What's the weather in 98230?"
+magpie ask "Give me the forecast for 98230" --json
+magpie ask "Who voices Kirishima in Yakuza Fiancé?"
+magpie ask "anime schedule for today"
+magpie ask "What's the latest AI news?"
+magpie ask "world news from yesterday" --json
+magpie ask "Compare the latest policies" --json --debug
 ```
 
 Other useful commands:
@@ -117,7 +119,7 @@ magpie doctor --live
 magpie clear-cache
 ```
 
-`magpie research` first tries the configured local A2A server. If initial A2A
+`magpie ask` first tries the configured local A2A server. If initial A2A
 discovery or connection fails, it runs the same service directly. It does not
 silently retry a request after the A2A server has accepted it.
 
@@ -160,7 +162,7 @@ RSS or Atom feeds without article fetching or synthesis. Arbitrary topics such
 as company-specific news fall back to general web research. If a specialized
 route fails, Magpie falls back to general web research.
 
-General research follows a bounded incremental loop:
+General web lookup follows a bounded incremental loop:
 
 1. Reuse fresh, previously accepted sources for the exact question when available.
 2. Ask the resolver for one focused search query.
@@ -190,7 +192,7 @@ Exact-question cache reuse is intentionally conservative:
 Source acceptance is a structured resolver decision. Magpie does not attempt to
 infer whether an answer is a refusal by matching generated prose with regex.
 
-## Bounded Research
+## Bounded Lookup
 
 Runs are limited across queries, sources, evidence items, source characters, and
 incremental answer size. The principal settings are:
@@ -210,7 +212,7 @@ usable grounded answer return `status: "error"`.
 
 ## Diagnostics
 
-Use `magpie research ... --debug` or enable `include_timing_debug` to include
+Use `magpie ask ... --debug` or enable `include_timing_debug` to include
 timings and run events in results. Shared resolver and fetch logs are tagged
 with run IDs:
 

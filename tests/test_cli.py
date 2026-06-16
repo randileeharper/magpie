@@ -138,12 +138,12 @@ class CLITests(unittest.TestCase):
                 side_effect=A2ARequestError("accepted request failed"),
             ), mock.patch("magpie.cli.build_app") as build_app, redirect_stderr(io.StringIO()):
                 exit_code = cli.main([
-                    "--config", str(config_path), "research", "question", "--json",
+                    "--config", str(config_path), "ask", "question", "--json",
                 ])
         self.assertEqual(exit_code, 1)
         build_app.assert_not_called()
 
-    def test_research_outputs_json_via_a2a(self) -> None:
+    def test_ask_outputs_json_via_a2a(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.json"
             config_path.write_text(
@@ -173,7 +173,7 @@ class CLITests(unittest.TestCase):
                     [
                         "--config",
                         str(config_path),
-                        "research",
+                        "ask",
                         "Who is the mayor of New York?",
                         "--json",
                     ]
@@ -207,7 +207,7 @@ class CLITests(unittest.TestCase):
                         [
                             "--config",
                             str(config_path),
-                            "research",
+                            "ask",
                             "Who is the mayor of New York?",
                             "--json",
                         ]

@@ -18,15 +18,15 @@ from .text import valid_unicode
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="magpie", description="Magpie research worker CLI.")
+    parser = argparse.ArgumentParser(prog="magpie", description="Magpie information lookup CLI.")
     parser.add_argument("--config", dest="config_path", default=None, help="Path to a JSON config file.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    research = subparsers.add_parser("research", help="Research a natural-language question.")
-    research.add_argument("question", help="Question to research.")
-    research.add_argument("--max-references", type=int, default=5)
-    research.add_argument("--json", action="store_true", dest="as_json")
-    research.add_argument("--debug", action="store_true")
+    ask = subparsers.add_parser("ask", help="Ask a natural-language question.")
+    ask.add_argument("question", help="Question to answer.")
+    ask.add_argument("--max-references", type=int, default=5)
+    ask.add_argument("--json", action="store_true", dest="as_json")
+    ask.add_argument("--debug", action="store_true")
 
     serve = subparsers.add_parser("serve", help="Run the local A2A server.")
     serve.add_argument("--host", default=None, help="Override the configured bind host.")
