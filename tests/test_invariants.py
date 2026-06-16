@@ -148,6 +148,27 @@ class InvariantTests(unittest.TestCase):
             run = service.storage.get_run(task["id"])
         self.assertEqual(task["status"]["state"], "TASK_STATE_COMPLETED")
         self.assertEqual(run["run_id"], task["id"])
+        self.assertEqual(
+            task["status"]["message"]["parts"][0]["text"],
+            "Evidence from https://example.com/question/0.",
+        )
+
+    def test_agent_card_alias_without_json_suffix_works(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir, FakeResolverClient(), ManySearch())
+            app = build_fastapi_app(service, "http://testserver")
+
+            async def fetch() -> dict:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+                ) as client:
+                    response = await client.get("/.well-known/agent-card")
+                    self.assertEqual(response.status_code, 200)
+                    return response.json()
+
+            payload = asyncio.run(fetch())
+        self.assertEqual(payload["name"], "Magpie")
+        self.assertEqual(payload["skills"][0]["id"], "magpie_ask")
 
 
 if __name__ == "__main__":

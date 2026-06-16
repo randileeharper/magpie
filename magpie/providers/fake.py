@@ -175,7 +175,8 @@ class FakeNewsClient:
         ]
         lines = [
             (
-                f"{index}. 2026-06-15 0{index}:00 PDT | Story {index} | Example summary {index}. | Example Feed"
+                f"{index}. 2026-06-15 0{index}:00 PDT | Story {index} | Example summary {index}. | "
+                f"Example Feed | https://example.com/story-{index}"
             )
             for index in range(1, max_items + 1)
         ]

@@ -27,6 +27,7 @@ from a2a.types import (
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH, PROTOCOL_VERSION_1_0, TransportProtocol
 from a2a.utils.errors import InternalError, InvalidParamsError
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from google.protobuf import json_format
 
 from .errors import A2ARequestError, A2AUnavailableError
@@ -50,7 +51,7 @@ def _load_client_sdk() -> dict[str, Any]:
 
 def build_agent_card(base_url: str) -> AgentCard:
     return AgentCard(
-        name="Magpie Ask Worker",
+        name="Magpie",
         description="Natural-language information lookup with bounded web lookup and specialized API routes.",
         version="0.2.0",
         supported_interfaces=[
@@ -107,10 +108,15 @@ class SDKResearchAgentExecutor(AgentExecutor):
                 parts=[new_data_part(payload, media_type="application/json")],
                 name="magpie-ask-result",
             )
+            text_response = (
+                getattr(result, "answer", "")
+                or getattr(result, "summary", "")
+                or getattr(result, "message", "")
+            )
             message = Message(
                 role=Role.ROLE_AGENT, message_id=str(uuid4()), task_id=context.task_id,
                 context_id=context.context_id,
-                parts=[new_text_part(getattr(result, "summary", "") or getattr(result, "message", "")),
+                parts=[new_text_part(text_response),
                        new_data_part(payload, media_type="application/json")],
             )
             if result.status in {"ok", "partial"}:
@@ -150,12 +156,18 @@ def build_fastapi_app(service: ResearchService, base_url: str) -> FastAPI:
     bits = build_sdk_server(service, base_url)
     card = bits["agent_card"]
     handler = bits["request_handler"]
+
+    @app.get("/.well-known/agent-card")
+    async def agent_card_alias() -> JSONResponse:
+        return JSONResponse(json_format.MessageToDict(card))
+
     add_a2a_routes_to_fastapi(
         app,
         agent_card_routes=create_agent_card_routes(card, card_url=AGENT_CARD_WELL_KNOWN_PATH),
         jsonrpc_routes=create_jsonrpc_routes(handler, rpc_url="/a2a"),
         rest_routes=create_rest_routes(handler),
     )
+
     return app
 
 

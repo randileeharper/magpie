@@ -294,6 +294,8 @@ class NewsRSSProviderTests(unittest.TestCase):
             self.assertEqual(report.references[0].source_kind.value, "rss_feed")
             self.assertIn("AI Story One", report.answer)
             self.assertIn("AI Story Two", report.answer)
+            self.assertIn("https://example.com/a?utm_source=x", report.answer)
+            self.assertIn("https://example.com/b", report.answer)
             self.assertNotIn("<b>", report.answer)
             self.assertEqual(len(calls), 2)
         finally:

@@ -265,7 +265,7 @@ class FakeNewsClient:
             for index in range(1, max_items + 1)
         ]
         answer = "\n".join(
-            f"{index}. 2026-06-15 0{index}:00 PDT | Story {index} | Summary {index}. | Example Feed"
+            f"{index}. 2026-06-15 0{index}:00 PDT | Story {index} | Summary {index}. | Example Feed | https://example.com/story-{index}"
             for index in range(1, max_items + 1)
         )
         return NewsReport("Latest AI news.", answer, references)

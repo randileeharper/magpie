@@ -127,7 +127,10 @@ class NewsRSSClient:
             for index, item in enumerate(selected, start=1)
         ]
         lines = [
-            f"{index}. {self._format_local_time(item.published_at)} | {item.title} | {item.summary} | {item.source_name}"
+            (
+                f"{index}. {self._format_local_time(item.published_at)} | {item.title} | {item.summary} | "
+                f"{item.source_name} | {item.url}"
+            )
             for index, item in enumerate(selected, start=1)
         ]
         summary = self._summary_label(request, len(selected))
