@@ -89,6 +89,9 @@ include:
 - `MAGPIE_A2A_BASE_URL`
 - `MAGPIE_WEATHER_ENABLED`
 - `MAGPIE_NEWS_ENABLED`
+- `MAGPIE_HISTORIAN_ENABLED`
+- `MAGPIE_HISTORIAN_BASE_URL`
+- `MAGPIE_HISTORIAN_TOKEN`
 
 ## Run
 
@@ -222,6 +225,27 @@ with run IDs:
 Raw model output is written to the resolver log only when
 `resolver_include_raw_output` is enabled. Logs may contain full prompts, source
 content, and model output; do not publish them without reviewing their contents.
+
+## Historian Integration
+
+Historian event production is optional and disabled by default. Magpie emits
+compact research lifecycle records after its normal durable transitions; it
+does not send fetched documents, answer prose, raw provider payloads, hidden
+model reasoning, or credentials.
+
+Install the bundled manifest from the Historian checkout:
+
+```console
+historian app install /path/to/magpie/historian.manifest.json
+```
+
+Store the printed token in `MAGPIE_HISTORIAN_TOKEN` or `historian_token`, then
+enable delivery with `MAGPIE_HISTORIAN_ENABLED=true`. The default endpoint is
+`http://127.0.0.1:8768`.
+
+Historian delivery retries connection failures and HTTP 5xx responses. Delivery
+failure is logged by Magpie but does not turn an otherwise successful research
+run into a domain failure. No durable client-side spool is created.
 
 ## Development Notes
 

@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["jsonschema>=4.20,<5", "pytest>=8.0"]
 
 [project.scripts]
 magpie = "magpie.cli:main"

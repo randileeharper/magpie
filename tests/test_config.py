@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from magpie.config import Settings
+from magpie.errors import ConfigError
 from magpie.models import ResponseDetail
 
 
@@ -78,6 +79,59 @@ class SettingsTests(unittest.TestCase):
         diagnostics = settings.sanitized_diagnostics()
         self.assertEqual(diagnostics["news_digest_size"], 4)
         self.assertEqual(diagnostics["news_summary_max_characters"], 200)
+
+    def test_historian_defaults_and_token_redaction(self) -> None:
+        settings = Settings()
+        settings.validate()
+
+        self.assertFalse(settings.historian_enabled)
+        self.assertEqual(settings.historian_base_url, "http://127.0.0.1:8768")
+        self.assertEqual(settings.historian_timeout_seconds, 5.0)
+        self.assertTrue(settings.historian_verify_tls)
+        self.assertEqual(settings.historian_retry_count, 2)
+        diagnostics = settings.sanitized_diagnostics()
+        self.assertFalse(diagnostics["has_historian_token"])
+        self.assertNotIn("historian_token", diagnostics)
+
+    def test_historian_environment_overrides_and_normalizes_url(self) -> None:
+        overrides = {
+            "MAGPIE_HISTORIAN_ENABLED": "true",
+            "MAGPIE_HISTORIAN_BASE_URL": "https://historian.test///",
+            "MAGPIE_HISTORIAN_TOKEN": "hist_secret",
+            "MAGPIE_HISTORIAN_TIMEOUT_SECONDS": "2.5",
+            "MAGPIE_HISTORIAN_VERIFY_TLS": "false",
+            "MAGPIE_HISTORIAN_RETRY_COUNT": "4",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.json"
+            config_path.write_text("{}", encoding="utf-8")
+            previous = {name: os.environ.get(name) for name in overrides}
+            os.environ.update(overrides)
+            try:
+                settings = Settings.load(str(config_path))
+            finally:
+                for name, value in previous.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
+
+        self.assertTrue(settings.historian_enabled)
+        self.assertEqual(settings.historian_base_url, "https://historian.test")
+        self.assertEqual(settings.historian_token, "hist_secret")
+        self.assertEqual(settings.historian_timeout_seconds, 2.5)
+        self.assertFalse(settings.historian_verify_tls)
+        self.assertEqual(settings.historian_retry_count, 4)
+
+    def test_enabled_historian_requires_token(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "historian_token"):
+            Settings(historian_enabled=True).validate()
+
+    def test_historian_bounds_are_validated(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "timeout"):
+            Settings(historian_timeout_seconds=0).validate()
+        with self.assertRaisesRegex(ConfigError, "retry"):
+            Settings(historian_retry_count=-1).validate()
 
 
 if __name__ == "__main__":

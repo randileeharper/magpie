@@ -14,7 +14,7 @@ from typing import Any, Iterator
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .errors import StorageError
-from .models import EvidenceItem, FreshnessClass, Reference, SourceKind, to_jsonable, utc_now
+from .models import EvidenceItem, FreshnessClass, Reference, SourceKind, StopReason, to_jsonable, utc_now
 from .text import valid_unicode, valid_unicode_tree
 
 
@@ -138,6 +138,16 @@ class SQLiteStorage:
                 "UPDATE research_runs SET cancel_requested=1, updated_at=? WHERE run_id=?",
                 (utc_now(), run_id),
             )
+
+    def mark_run_cancelled(self, run_id: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE research_runs
+                   SET status='cancelled', stop_reason=?, updated_at=?
+                   WHERE run_id=? AND status != 'cancelled'""",
+                (StopReason.CANCELLED.value, utc_now(), run_id),
+            )
+        return cursor.rowcount > 0
 
     def is_cancel_requested(self, run_id: str) -> bool:
         with self._connect() as connection:

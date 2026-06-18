@@ -54,5 +54,11 @@
   "verify_tls": true,
   "log_level": "INFO",
   "database_path": "~/.local/share/magpie/magpie.db",
-  "a2a_base_url": "http://127.0.0.1:8766"
+  "a2a_base_url": "http://127.0.0.1:8766",
+  "historian_enabled": false,
+  "historian_base_url": "http://127.0.0.1:8768",
+  "historian_token": null,
+  "historian_timeout_seconds": 5.0,
+  "historian_verify_tls": true,
+  "historian_retry_count": 2
 }

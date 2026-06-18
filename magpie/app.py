@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Settings
+from .historian import HistorianSink, build_historian_sink
 from .providers.crawl4ai_fetcher import Crawl4AIFetcher
 from .providers.exa import ExaSearchClient
 from .providers.fake import FakeFetcher, FakeResolverClient, FakeSearchClient
@@ -28,6 +29,7 @@ class AppContext:
     weather_client: WeatherClient | None
     anime_client: AnimeClient | None
     news_client: NewsClient | None
+    historian_sink: HistorianSink
 
 
 def build_app(config_path: str | None = None) -> AppContext:
@@ -57,6 +59,7 @@ def build_app(config_path: str | None = None) -> AppContext:
     weather_client = NeonHailWeatherClient(settings=settings) if settings.weather_enabled else None
     anime_client = AniListClient(settings=settings) if settings.anime_enabled else None
     news_client = NewsRSSClient(settings=settings) if settings.news_enabled else None
+    historian_sink = build_historian_sink(settings)
     service = ResearchService(
         storage=storage,
         resolver=resolver,
@@ -66,6 +69,7 @@ def build_app(config_path: str | None = None) -> AppContext:
         weather_client=weather_client,
         anime_client=anime_client,
         news_client=news_client,
+        historian_sink=historian_sink,
     )
     return AppContext(
         settings=settings,
@@ -76,4 +80,5 @@ def build_app(config_path: str | None = None) -> AppContext:
         weather_client=weather_client,
         anime_client=anime_client,
         news_client=news_client,
+        historian_sink=historian_sink,
     )

@@ -1,0 +1,326 @@
+{
+  "app_id": "magpie",
+  "description": "Bounded information-retrieval agent with web and specialized provider routes.",
+  "default_scopes": ["events:write"],
+  "schemas": [
+    {
+      "event_type": "research.run.started",
+      "version": 1,
+      "record_family": "status",
+      "description": "A Magpie research run started.",
+      "searchable_fields": ["run_id", "question", "run_label", "freshness_class"],
+      "redacted_fields": [],
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "run_id": {"type": "string"},
+          "question": {"type": "string"},
+          "run_label": {"type": ["string", "null"]},
+          "freshness_class": {"type": "string", "enum": ["recent", "evergreen"]},
+          "response_detail": {"type": "string", "enum": ["compact", "debug"]}
+        },
+        "required": ["run_id", "question", "run_label", "freshness_class", "response_detail"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "event_type": "research.route.selected",
+      "version": 1,
+      "record_family": "event",
+      "description": "Magpie selected or fell back to a research route.",
+      "searchable_fields": ["run_id", "route", "fallback_reason"],
+      "redacted_fields": [],
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "run_id": {"type": "string"},
+          "route": {"type": "string", "enum": ["web_research", "weather", "anime", "news"]},
+          "fallback_reason": {"type": ["string", "null"]}
+        },
+        "required": ["run_id", "route", "fallback_reason"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "event_type": "research.query.executed",
+      "version": 1,
+      "record_family": "event",
+      "description": "Magpie executed a normalized search query.",
+      "searchable_fields": ["run_id", "query_id", "normalized_query", "provider", "freshness_class"],
+      "redacted_fields": [],
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "run_id": {"type": "string"},
+          "query_id": {"type": "string"},
+          "normalized_query": {"type": "string"},
+          "provider": {"type": "string"},
+          "freshness_class": {"type": "string", "enum": ["recent", "evergreen"]},
+          "result_count": {"type": "integer", "minimum": 0},
+          "duration_ms": {"type": "number", "minimum": 0}
+        },
+        "required": ["run_id", "query_id", "normalized_query", "provider", "freshness_class", "result_count", "duration_ms"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "event_type": "research.source.discovered",
+      "version": 1,
+      "record_family": "event",
+      "description": "A unique source candidate was selected from search results.",
+      "searchable_fields": ["run_id", "search_result_id", "canonical_url", "title", "provider", "published_at"],
+      "redacted_fields": [],
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "run_id": {"type": "string"},
+          "search_result_id": {"type": ["string", "null"]},
+          "canonical_url": {"type": "string"},
+          "title": {"type": "string"},
+          "provider": {"type": "string"},
+          "published_at": {"type": ["string", "null"]}
+        },
+        "required": ["run_id", "search_result_id", "canonical_url", "title", "provider", "published_at"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "event_type": "research.source.fetched",
+      "version": 1,
+      "record_family": "event",
+      "description": "Magpie persisted compact metadata for an acquired source.",
+      "searchable_fields": ["run_id", "source_id", "search_result_id", "canonical_url", "title", "provider", "source_kind"],
+      "redacted_fields": [],
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "run_id": {"type": "string"},
+          "source_id": {"type": "string"},
+          "search_result_id": {"type": ["string", "null"]},
+          "canonical_url": {"type": "string"},
+          "title": {"type": "string"},
+          "provider": {"type": "string"},
+          "source_kind": {"type": "string"},
+          "published_at": {"type": ["string", "null"]},
+          "duration_ms": {"type": "number", "minimum": 0},
+          "fallback_content": {"type": "boolean"}
+        },
+        "required": ["run_id", "source_id", "search_result_id", "canonical_url", "title", "provider", "source_kind", "published_at", "duration_ms", "fallback_content"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "event_type": "research.source.rejected",
+      "version": 1,
+      "record_family": "event",
+      "description": "A source was rejected for a normalized question or query.",
+      "searchable_fields": ["run_id", "source_id", "normalized_query", "reason"],
+      "redacted_fields": [],
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "run_id": {"type": "string"},
+          "source_id": {"type": ["string", "null"]},
+          "normalized_query": {"type": ["string", "null"]},
+          "reason": {"type": "string"}
+        },
+        "required": ["run_id", "source_id", "normalized_query", "reason"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "event_type": "research.cache.hit",
+      "version": 1,
+      "record_family": "event",
+      "description": "Magpie reused a fresh source snapshot.",
+      "searchable_fields": ["run_id", "source_id", "canonical_url", "title", "cache_kind", "freshness_class"],
+      "redacted_fields": [],
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "run_id": {"type": "string"},
+          "source_id": {"type": "string"},
+          "canonical_url": {"type": "string"},
+          "title": {"type": "string"},
+          "cache_kind": {"type": "string", "enum": ["exact_query", "url"]},
+          "freshness_class": {"type": "string", "enum": ["recent", "evergreen"]}
+        },
+        "required": ["run_id", "source_id", "canonical_url", "title", "cache_kind", "freshness_class"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "event_type": "research.synthesis.completed",
+      "version": 1,
+      "record_family": "event",
+      "description": "A bounded grounded synthesis pass completed without storing answer prose.",
+      "searchable_fields": ["run_id", "source_id", "cited_source_ids", "source_answers_question"],
+      "redacted_fields": [],
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "run_id": {"type": "string"},
+          "source_id": {"type": "string"},
+          "cited_source_ids": {"type": "array", "items": {"type": "string"}},
+          "source_answers_question": {"type": "boolean"},
+          "remaining_question_count": {"type": "integer", "minimum": 0},
+          "summary_characters": {"type": "integer", "minimum": 0},
+          "answer_characters": {"type": "integer", "minimum": 0},
+          "duration_ms": {"type": "number", "minimum": 0}
+        },
+        "required": ["run_id", "source_id", "cited_source_ids", "source_answers_question", "remaining_question_count", "summary_characters", "answer_characters", "duration_ms"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "event_type": "research.run.completed",
+      "version": 1,
+      "record_family": "status",
+      "description": "A Magpie research run durably completed.",
+      "searchable_fields": ["run_id", "status", "route", "stop_reason", "reference_ids"],
+      "redacted_fields": [],
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": "#/$defs/result",
+        "$defs": {
+          "result": {
+            "type": "object",
+            "properties": {
+              "run_id": {"type": "string"},
+              "status": {"const": "ok"},
+              "route": {"type": "string"},
+              "stop_reason": {"type": "string"},
+              "reference_ids": {"type": "array", "items": {"type": "string"}},
+              "counts": {"$ref": "#/$defs/counts"},
+              "timings_ms": {"type": "object", "additionalProperties": {"type": "number", "minimum": 0}},
+              "duration_ms": {"type": "number", "minimum": 0}
+            },
+            "required": ["run_id", "status", "route", "stop_reason", "reference_ids", "counts", "timings_ms", "duration_ms"],
+            "additionalProperties": false
+          },
+          "counts": {
+            "type": "object",
+            "properties": {
+              "queries": {"type": "integer", "minimum": 0},
+              "sources_discovered": {"type": "integer", "minimum": 0},
+              "sources_fetched": {"type": "integer", "minimum": 0},
+              "sources_rejected": {"type": "integer", "minimum": 0},
+              "cache_hits": {"type": "integer", "minimum": 0},
+              "syntheses": {"type": "integer", "minimum": 0}
+            },
+            "required": ["queries", "sources_discovered", "sources_fetched", "sources_rejected", "cache_hits", "syntheses"],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "event_type": "research.run.partial",
+      "version": 1,
+      "record_family": "status",
+      "description": "A Magpie run durably completed with a partial grounded answer.",
+      "searchable_fields": ["run_id", "status", "route", "stop_reason", "reference_ids"],
+      "redacted_fields": [],
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "run_id": {"type": "string"},
+          "status": {"const": "partial"},
+          "route": {"type": "string"},
+          "stop_reason": {"type": "string"},
+          "reference_ids": {"type": "array", "items": {"type": "string"}},
+          "counts": {"$ref": "#/$defs/counts"},
+          "timings_ms": {"type": "object", "additionalProperties": {"type": "number", "minimum": 0}},
+          "duration_ms": {"type": "number", "minimum": 0}
+        },
+        "required": ["run_id", "status", "route", "stop_reason", "reference_ids", "counts", "timings_ms", "duration_ms"],
+        "additionalProperties": false,
+        "$defs": {
+          "counts": {
+            "type": "object",
+            "properties": {
+              "queries": {"type": "integer", "minimum": 0},
+              "sources_discovered": {"type": "integer", "minimum": 0},
+              "sources_fetched": {"type": "integer", "minimum": 0},
+              "sources_rejected": {"type": "integer", "minimum": 0},
+              "cache_hits": {"type": "integer", "minimum": 0},
+              "syntheses": {"type": "integer", "minimum": 0}
+            },
+            "required": ["queries", "sources_discovered", "sources_fetched", "sources_rejected", "cache_hits", "syntheses"],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "event_type": "research.run.failed",
+      "version": 1,
+      "record_family": "error",
+      "description": "A Magpie research run durably failed.",
+      "searchable_fields": ["run_id", "status", "route", "stop_reason", "stage", "error_type", "error_message"],
+      "redacted_fields": [],
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "run_id": {"type": "string"},
+          "status": {"const": "error"},
+          "route": {"type": "string"},
+          "stop_reason": {"type": "string"},
+          "reference_ids": {"type": "array", "items": {"type": "string"}},
+          "counts": {"$ref": "#/$defs/counts"},
+          "timings_ms": {"type": "object", "additionalProperties": {"type": "number", "minimum": 0}},
+          "duration_ms": {"type": "number", "minimum": 0},
+          "stage": {"type": "string"},
+          "error_type": {"type": "string"},
+          "error_message": {"type": "string"}
+        },
+        "required": ["run_id", "status", "route", "stop_reason", "reference_ids", "counts", "timings_ms", "duration_ms", "stage", "error_type", "error_message"],
+        "additionalProperties": false,
+        "$defs": {
+          "counts": {
+            "type": "object",
+            "properties": {
+              "queries": {"type": "integer", "minimum": 0},
+              "sources_discovered": {"type": "integer", "minimum": 0},
+              "sources_fetched": {"type": "integer", "minimum": 0},
+              "sources_rejected": {"type": "integer", "minimum": 0},
+              "cache_hits": {"type": "integer", "minimum": 0},
+              "syntheses": {"type": "integer", "minimum": 0}
+            },
+            "required": ["queries", "sources_discovered", "sources_fetched", "sources_rejected", "cache_hits", "syntheses"],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "event_type": "research.run.canceled",
+      "version": 1,
+      "record_family": "status",
+      "description": "A Magpie research run was durably canceled.",
+      "searchable_fields": ["run_id", "status", "stop_reason"],
+      "redacted_fields": [],
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "run_id": {"type": "string"},
+          "status": {"const": "canceled"},
+          "stop_reason": {"const": "cancelled"}
+        },
+        "required": ["run_id", "status", "stop_reason"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

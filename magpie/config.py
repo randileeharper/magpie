@@ -91,6 +91,12 @@ class Settings:
     cache_recent_ttl_seconds: int = 86400
     cache_evergreen_ttl_seconds: int = 2592000
     a2a_base_url: str = "http://127.0.0.1:8766"
+    historian_enabled: bool = False
+    historian_base_url: str = "http://127.0.0.1:8768"
+    historian_token: str | None = None
+    historian_timeout_seconds: float = 5.0
+    historian_verify_tls: bool = True
+    historian_retry_count: int = 2
 
     @classmethod
     def load(cls, path: str | None = None) -> "Settings":
@@ -138,6 +144,17 @@ class Settings:
         return None
 
     def validate(self) -> None:
+        self.historian_base_url = self.historian_base_url.rstrip("/")
+        if self.historian_token is not None:
+            self.historian_token = self.historian_token.strip() or None
+        if not self.historian_base_url:
+            raise ConfigError("historian_base_url cannot be empty.")
+        if self.historian_enabled and not self.historian_token:
+            raise ConfigError("historian_token is required when historian_enabled is true.")
+        if self.historian_timeout_seconds <= 0:
+            raise ConfigError("historian_timeout_seconds must be positive.")
+        if self.historian_retry_count < 0:
+            raise ConfigError("historian_retry_count must be non-negative.")
         if self.max_search_queries_per_run < 1:
             raise ConfigError("max_search_queries_per_run must be positive.")
         if self.max_sources_per_run < 1:
@@ -245,4 +262,10 @@ class Settings:
             "cache_recent_ttl_seconds": self.cache_recent_ttl_seconds,
             "cache_evergreen_ttl_seconds": self.cache_evergreen_ttl_seconds,
             "a2a_base_url": self.a2a_base_url,
+            "historian_enabled": self.historian_enabled,
+            "historian_base_url": self.historian_base_url,
+            "has_historian_token": bool(self.historian_token),
+            "historian_timeout_seconds": self.historian_timeout_seconds,
+            "historian_verify_tls": self.historian_verify_tls,
+            "historian_retry_count": self.historian_retry_count,
         }

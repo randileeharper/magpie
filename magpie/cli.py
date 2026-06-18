@@ -145,6 +145,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     finally:
         if app is not None:
+            app.service.close()
             app.storage.close()
 
     if args.as_json:
