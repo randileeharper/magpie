@@ -208,6 +208,38 @@ class OpenAICompatibleResolverTests(unittest.TestCase):
         self.assertEqual(draft.answer, "fact")
         self.assertEqual(draft.cited_source_ids, ["source-1"])
 
+    def test_synthesize_retries_once_after_incomplete_json_output(self) -> None:
+        call_count = 0
+        captured_payloads: list[dict[str, object]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            captured_payloads.append(json.loads(request.content.decode("utf-8")))
+            if call_count == 1:
+                content = '{"summary":"'
+            else:
+                content = (
+                    '{"summary":"short","answer":"fact","cited_source_ids":["source-1"],'
+                    '"remaining_questions":[],"source_answers_question":true}'
+                )
+            return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+        evidence = [EvidenceItem(evidence_id="e-1", source_id="source-1", excerpt="fact", note="note")]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(tmpdir),
+                transport=httpx.MockTransport(handler),
+            )
+            draft = client.synthesize("question", evidence)
+
+        self.assertEqual(call_count, 2)
+        self.assertEqual(draft.answer, "fact")
+        self.assertIn(
+            "Your previous response was malformed or incomplete.",
+            captured_payloads[1]["messages"][0]["content"],
+        )
+
     def test_synthesize_retries_once_when_answer_contains_control_artifacts(self) -> None:
         call_count = 0
 

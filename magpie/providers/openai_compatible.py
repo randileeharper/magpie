@@ -340,12 +340,16 @@ class OpenAICompatibleResolverClient:
             "Set remaining_questions to [] only when the answer is directly usable and complete. "
             "Set source_answers_question=false if the new source does not contribute facts that answer the question. "
             "When false, return an empty answer, empty cited_source_ids, and put the missing information in remaining_questions. "
-            "Do not put citations, source ids, or an Additional Resources section in the answer text."
+            "Do not put citations, source ids, or an Additional Resources section in the answer text. "
+            "Write the answer as plain English markdown with real newline characters, not escaped \\n sequences. "
+            "Do not mix languages, transliterations, or stray non-English text unless the source explicitly requires it. "
+            "Do not include decorative bolded step titles unless they improve clarity. Prefer clean numbered steps and short paragraphs."
         )
         if procedural:
             system += (
                 " This is a procedural request. Return one coherent, directly usable method with an ordered list of concrete steps. "
-                "Do not merely name stages or techniques. If evidence lacks details needed to perform a step, put that need in remaining_questions."
+                "Do not merely name stages or techniques. Each step must be actionable and written as a normal sentence, not a label fragment. "
+                "Avoid nested lists unless the source clearly requires them. If evidence lacks details needed to perform a step, put that need in remaining_questions."
             )
         if recipe:
             system += (
@@ -471,94 +475,108 @@ class OpenAICompatibleResolverClient:
         schema_name: str,
         schema: dict[str, Any],
     ) -> dict[str, Any]:
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user if isinstance(user, str) else json.dumps(user, ensure_ascii=True)},
-        ]
-        payload = {
-            "model": self.settings.resolver_model,
-            "messages": messages,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema_name,
-                    "strict": True,
-                    "schema": schema,
-                },
-            },
-            **self.reasoning_request_options(),
-        }
+        user_content = user if isinstance(user, str) else json.dumps(user, ensure_ascii=True)
         headers = {"Content-Type": "application/json"}
         if self.settings.resolver_api_key:
             headers["Authorization"] = f"Bearer {self.settings.resolver_api_key}"
-
-        started = perf_counter()
-        self._append_debug_entry(
-            step=step,
-            system_prompt=system,
-            user_payload=user,
-            elapsed_ms=None,
-            response_status_code=None,
-            response_text=None,
-            error_text=None,
-        )
-        response_json: dict[str, Any] | None = None
-        try:
-            with httpx.Client(
-                timeout=self.settings.request_timeout_seconds,
-                verify=self.settings.verify_tls,
-                transport=self.transport,
-            ) as client:
-                response = client.post(
-                    self.settings.resolver_base_url.rstrip("/") + "/chat/completions",
-                    headers=headers,
-                    json=payload,
+        last_content = ""
+        for attempt in range(2):
+            attempt_step = step if attempt == 0 else f"{step}_json_retry"
+            system_prompt = system
+            if attempt == 1:
+                system_prompt += (
+                    " Your previous response was malformed or incomplete. "
+                    "Return exactly one complete JSON object that matches the schema, with no prose, markdown, "
+                    "or trailing text."
                 )
-            elapsed_ms = round((perf_counter() - started) * 1000, 2)
-            response_text = response.text
-            try:
-                response_json = response.json()
-            except ValueError:
-                response_json = None
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
+            payload = {
+                "model": self.settings.resolver_model,
+                "messages": messages,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema_name,
+                        "strict": True,
+                        "schema": schema,
+                    },
+                },
+                **self.reasoning_request_options(),
+            }
+            started = perf_counter()
             self._append_debug_entry(
-                step=step,
-                system_prompt=system,
+                step=attempt_step,
+                system_prompt=system_prompt,
                 user_payload=user,
-                elapsed_ms=elapsed_ms,
-                response_status_code=response.status_code,
-                response_text=self._extract_response_content(response_json) or response_text,
-                error_text=None,
-            )
-        except httpx.HTTPError as exc:
-            elapsed_ms = round((perf_counter() - started) * 1000, 2)
-            self._append_debug_entry(
-                step=step,
-                system_prompt=system,
-                user_payload=user,
-                elapsed_ms=elapsed_ms,
+                elapsed_ms=None,
                 response_status_code=None,
                 response_text=None,
-                error_text=f"{type(exc).__name__}: {exc}",
+                error_text=None,
             )
-            raise
-        if response.status_code >= 400:
-            raise ResolverError(f"Resolver HTTP error {response.status_code}: {response.text[:300]}")
-        if response_json is None:
-            raise ResolverError("Resolver returned a non-JSON HTTP response.")
-        data = response_json
-        try:
-            content = data["choices"][0]["message"]["content"]
-        except Exception as exc:  # noqa: BLE001
-            raise ResolverError("Resolver response did not include a chat completion message.") from exc
-        if not isinstance(content, str) or not content.strip():
-            raise ResolverError("Resolver returned empty content.")
-        try:
-            parsed = self._load_json_object_prefix(content)
-        except json.JSONDecodeError as exc:
-            raise ResolverError(f"Resolver returned malformed JSON: {content[:300]}") from exc
-        if not isinstance(parsed, dict):
-            raise ResolverError("Resolver returned JSON that was not an object.")
-        return valid_unicode_tree(parsed)
+            response_json: dict[str, Any] | None = None
+            try:
+                with httpx.Client(
+                    timeout=self.settings.request_timeout_seconds,
+                    verify=self.settings.verify_tls,
+                    transport=self.transport,
+                ) as client:
+                    response = client.post(
+                        self.settings.resolver_base_url.rstrip("/") + "/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                elapsed_ms = round((perf_counter() - started) * 1000, 2)
+                response_text = response.text
+                try:
+                    response_json = response.json()
+                except ValueError:
+                    response_json = None
+                self._append_debug_entry(
+                    step=attempt_step,
+                    system_prompt=system_prompt,
+                    user_payload=user,
+                    elapsed_ms=elapsed_ms,
+                    response_status_code=response.status_code,
+                    response_text=self._extract_response_content(response_json) or response_text,
+                    error_text=None,
+                )
+            except httpx.HTTPError as exc:
+                elapsed_ms = round((perf_counter() - started) * 1000, 2)
+                self._append_debug_entry(
+                    step=attempt_step,
+                    system_prompt=system_prompt,
+                    user_payload=user,
+                    elapsed_ms=elapsed_ms,
+                    response_status_code=None,
+                    response_text=None,
+                    error_text=f"{type(exc).__name__}: {exc}",
+                )
+                raise
+            if response.status_code >= 400:
+                raise ResolverError(f"Resolver HTTP error {response.status_code}: {response.text[:300]}")
+            if response_json is None:
+                raise ResolverError("Resolver returned a non-JSON HTTP response.")
+            data = response_json
+            try:
+                content = data["choices"][0]["message"]["content"]
+            except Exception as exc:  # noqa: BLE001
+                raise ResolverError("Resolver response did not include a chat completion message.") from exc
+            if not isinstance(content, str) or not content.strip():
+                raise ResolverError("Resolver returned empty content.")
+            last_content = content
+            try:
+                parsed = self._load_json_object_prefix(content)
+            except json.JSONDecodeError:
+                if attempt == 0:
+                    continue
+                raise ResolverError(f"Resolver returned malformed JSON: {content[:300]}") from None
+            if not isinstance(parsed, dict):
+                raise ResolverError("Resolver returned JSON that was not an object.")
+            return valid_unicode_tree(parsed)
+        raise ResolverError(f"Resolver returned malformed JSON: {last_content[:300]}")
 
     def _append_debug_entry(
         self,
