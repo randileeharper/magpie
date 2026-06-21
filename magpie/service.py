@@ -772,9 +772,7 @@ class ResearchService:
         self.storage.save_final_answer(run_id, report.summary, report.answer, references)
         self.storage.update_run_status(run_id, "completed", StopReason.SPECIALIZED_ROUTE.value)
         for reference in references:
-            self._record_specialized_source(
-                run_id, reference, "rss", timings.get("news", [0.0])[-1]
-            )
+            self._record_specialized_source(run_id, reference, "rss", 0.0)
         self._record_run_finished(
             run_id,
             "research.run.completed",
