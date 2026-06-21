@@ -337,8 +337,11 @@ class NewsRSSClient:
                     break
                 if canonicalize_url(item.url) in used_urls:
                     continue
+                if per_source.get(item.source_name, 0) >= self.settings.news_per_source_limit:
+                    continue
                 selected.append(item)
                 used_urls.add(canonicalize_url(item.url))
+                per_source[item.source_name] = per_source.get(item.source_name, 0) + 1
         return selected
 
     def _time_window(self, scope: NewsTimeScope) -> tuple[datetime, datetime]:
