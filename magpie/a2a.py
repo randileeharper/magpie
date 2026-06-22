@@ -30,30 +30,17 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from google.protobuf import json_format
 
+from . import __version__
 from .errors import A2ARequestError, A2AUnavailableError
 from .models import ResearchRequest, ResponseDetail, StopReason, to_jsonable
 from .service import ResearchService
-
-
-def _load_client_sdk() -> dict[str, Any]:
-    return {
-        "AgentCardResolutionError": AgentCardResolutionError,
-        "ClientConfig": ClientConfig,
-        "ClientFactory": ClientFactory,
-        "Message": Message,
-        "Role": Role,
-        "SendMessageRequest": SendMessageRequest,
-        "Task": Task,
-        "TaskState": TaskState,
-        "new_text_part": new_text_part,
-    }
 
 
 def build_agent_card(base_url: str) -> AgentCard:
     return AgentCard(
         name="Magpie",
         description="Natural-language information lookup with bounded web lookup and specialized API routes.",
-        version="0.2.0",
+        version=__version__,
         supported_interfaces=[
             AgentInterface(url=f"{base_url.rstrip('/')}/a2a", protocol_binding=TransportProtocol.JSONRPC.value,
                            protocol_version=PROTOCOL_VERSION_1_0),
@@ -147,7 +134,7 @@ def build_sdk_server(service: ResearchService, base_url: str) -> dict[str, Any]:
 
 
 def build_fastapi_app(service: ResearchService, base_url: str) -> FastAPI:
-    app = FastAPI(title="Magpie A2A Server", version="0.2.0")
+    app = FastAPI(title="Magpie A2A Server", version=__version__)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -181,25 +168,24 @@ class LocalA2AClient:
         return asyncio.run(self._send(request))
 
     async def _send(self, request: ResearchRequest) -> dict[str, Any]:
-        sdk = _load_client_sdk()
-        message = sdk["Message"](
-            role=sdk["Role"].ROLE_USER, message_id=str(uuid4()),
-            parts=[sdk["new_text_part"](request.question, media_type="text/plain")],
+        message = Message(
+            role=Role.ROLE_USER, message_id=str(uuid4()),
+            parts=[new_text_part(request.question, media_type="text/plain")],
             metadata={"max_references": request.max_references, "response_detail": request.response_detail.value,
                       "run_label": request.run_label},
         )
         http = httpx.AsyncClient(timeout=self.timeout_seconds, verify=self.verify_tls)
         try:
             try:
-                client = await sdk["ClientFactory"](
-                    sdk["ClientConfig"](streaming=False, polling=False, httpx_client=http)
+                client = await ClientFactory(
+                    ClientConfig(streaming=False, polling=False, httpx_client=http)
                 ).create_from_url(self.base_url)
-            except (httpx.HTTPError, sdk["AgentCardResolutionError"]) as exc:
+            except (httpx.HTTPError, AgentCardResolutionError) as exc:
                 await http.aclose()
                 raise A2AUnavailableError(f"Local A2A server is unavailable at {self.base_url}: {exc}") from exc
             try:
                 try:
-                    async for response in client.send_message(sdk["SendMessageRequest"](message=message)):
+                    async for response in client.send_message(SendMessageRequest(message=message)):
                         if response.HasField("task"):
                             return self._task_to_payload(response.task)
                         if response.HasField("message"):

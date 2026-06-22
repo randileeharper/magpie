@@ -95,10 +95,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (ConfigError, OSError) as exc:
             print(str(exc), file=sys.stderr)
             return 2
-        if args.as_json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
-        else:
-            print(json.dumps(payload, indent=2, sort_keys=True))
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return exit_code
 
     app = None
@@ -116,10 +113,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "doctor":
             payload = run_doctor(app.settings, app.search_client, app.fetcher, app.news_client, live=args.live)
-            if args.as_json:
-                print(json.dumps(payload, indent=2, sort_keys=True))
-            else:
-                print(json.dumps(payload, indent=2, sort_keys=True))
+            print(json.dumps(payload, indent=2, sort_keys=True))
             return 0 if payload.get("status") == "ok" else 2
 
         settings = Settings.load(args.config_path)

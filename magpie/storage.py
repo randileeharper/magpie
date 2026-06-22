@@ -66,13 +66,6 @@ class SQLiteStorage:
         finally:
             connection.close()
 
-    @property
-    def _connection(self) -> sqlite3.Connection:
-        """Compatibility-only inspection connection; callers must close it."""
-        connection = sqlite3.connect(self._database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
-
     def initialize(self) -> None:
         with self._initialize_lock:
             if self._database_path.exists():

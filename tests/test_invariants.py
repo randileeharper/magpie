@@ -80,17 +80,16 @@ class InvariantTests(unittest.TestCase):
             resolver = IterativeResolver()
             service = self._service(tmpdir, resolver, ManySearch())
             result = service.research(ResearchRequest("question"))
-            connection = service.storage._connection
-            queries = connection.execute(
-                "SELECT COUNT(*) FROM research_queries WHERE run_id=?", (result.run_id,)
-            ).fetchone()[0]
-            sources = connection.execute(
-                "SELECT COUNT(*) FROM run_source_links WHERE run_id=?", (result.run_id,)
-            ).fetchone()[0]
-            evidence = connection.execute(
-                "SELECT COUNT(*) FROM evidence_items WHERE run_id=?", (result.run_id,)
-            ).fetchone()[0]
-            connection.close()
+            with service.storage._connect() as connection:
+                queries = connection.execute(
+                    "SELECT COUNT(*) FROM research_queries WHERE run_id=?", (result.run_id,)
+                ).fetchone()[0]
+                sources = connection.execute(
+                    "SELECT COUNT(*) FROM run_source_links WHERE run_id=?", (result.run_id,)
+                ).fetchone()[0]
+                evidence = connection.execute(
+                    "SELECT COUNT(*) FROM evidence_items WHERE run_id=?", (result.run_id,)
+                ).fetchone()[0]
         self.assertLessEqual(queries, 3)
         self.assertLessEqual(sources, 3)
         self.assertLessEqual(evidence, 2)
