@@ -134,6 +134,9 @@ def build_event(
     }
     if subject is not None:
         event["subject"] = subject
+    # Historian expects these as lowercase CloudEvents extension attribute
+    # names; they are not part of the core CloudEvents spec and are pinned
+    # by test_historian.py.
     if correlation_id is not None:
         event["correlationid"] = correlation_id
     if causation_id is not None:

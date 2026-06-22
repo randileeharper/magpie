@@ -57,7 +57,7 @@ class CLITests(unittest.TestCase):
         }
 
         client = LocalA2AClient("http://127.0.0.1:8766")
-        with mock.patch("magpie.a2a._load_client_sdk", return_value=sdk):
+        with mock.patch.multiple("magpie.a2a", **sdk):
             with self.assertRaises(A2ARequestError):
                 client.send(ResearchRequest(question="Who is the mayor of Seattle?"))
 

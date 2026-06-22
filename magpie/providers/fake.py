@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from ..models import (
     EvidenceItem,
@@ -161,13 +162,14 @@ class FakeSearchClient:
 @dataclass(slots=True)
 class FakeNewsClient:
     def get_news(self, request: NewsRequest, max_items: int) -> NewsReport:
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         references = [
             Reference(
                 f"rss:{index}",
                 f"Story {index}",
                 f"https://example.com/story-{index}",
                 "Example Feed",
-                f"2026-06-15T0{index}:00:00-07:00",
+                f"{today}T0{index}:00:00-07:00",
                 None,
                 SourceKind.RSS_FEED,
             )
@@ -175,7 +177,7 @@ class FakeNewsClient:
         ]
         lines = [
             (
-                f"{index}. 2026-06-15 0{index}:00 PDT | Story {index} | Example summary {index}. | "
+                f"{index}. {today} 0{index}:00 PDT | Story {index} | Example summary {index}. | "
                 f"Example Feed | https://example.com/story-{index}"
             )
             for index in range(1, max_items + 1)

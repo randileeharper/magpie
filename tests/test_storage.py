@@ -39,9 +39,8 @@ class StorageTests(unittest.TestCase):
             )
             first_cached = storage.get_cached_source_by_url("https://example.com/a")
             second_cached = storage.get_cached_source_by_url("https://example.com/b")
-            connection = storage._connection
-            document_count = connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-            connection.close()
+            with storage._connect() as connection:
+                document_count = connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
             storage.close()
         self.assertNotEqual(first, second)
         self.assertEqual(first_cached["raw_url"], "https://example.com/a?utm_source=x")
@@ -56,12 +55,11 @@ class StorageTests(unittest.TestCase):
                 connection.execute("CREATE TABLE old_schema (value TEXT)")
             storage = SQLiteStorage(database_path)
             storage.initialize()
-            connection = storage._connection
-            version = connection.execute("PRAGMA user_version").fetchone()[0]
-            old_table = connection.execute(
-                "SELECT name FROM sqlite_master WHERE name='old_schema'"
-            ).fetchone()
-            connection.close()
+            with storage._connect() as connection:
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+                old_table = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE name='old_schema'"
+                ).fetchone()
             storage.close()
         self.assertEqual(version, 3)
         self.assertIsNone(old_table)
@@ -73,11 +71,10 @@ class StorageTests(unittest.TestCase):
             run_id = storage.create_run("q", None, FreshnessClass.EVERGREEN, "compact")
             first = storage.upsert_source(run_id, "https://example.com/a", "A", None, None, "old", {})
             second = storage.upsert_source(run_id, "https://example.com/a", "A", None, None, "new", {})
-            connection = storage._connection
-            source_count = connection.execute(
-                "SELECT COUNT(*) FROM sources WHERE canonical_url='https://example.com/a'"
-            ).fetchone()[0]
-            connection.close()
+            with storage._connect() as connection:
+                source_count = connection.execute(
+                    "SELECT COUNT(*) FROM sources WHERE canonical_url='https://example.com/a'"
+                ).fetchone()[0]
             self.assertNotEqual(first, second)
             self.assertEqual(source_count, 2)
             self.assertEqual(storage.get_extract_text(first), "old")
