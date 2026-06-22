@@ -16,6 +16,7 @@ from ..models import (
     FetchedSource,
     PlanningContext,
     QueryProposal,
+    Reference,
     RouteDecision,
     SearchRequest,
     SearchResultRecord,

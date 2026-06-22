@@ -109,6 +109,8 @@ class Settings:
                 raise ConfigError(f"Config file not found: {config_path}") from exc
             except json.JSONDecodeError as exc:
                 raise ConfigError(f"Config file is not valid JSON: {config_path}") from exc
+            if not isinstance(data, dict):
+                raise ConfigError(f"Config file must contain a JSON object: {config_path}")
         configurable_fields = {item.name for item in fields(cls) if item.init}
         unknown = sorted(set(data) - configurable_fields)
         if unknown:

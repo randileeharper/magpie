@@ -74,6 +74,14 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.http_port, 8124)
         self.assertEqual(settings.loaded_config_path, str(explicit_config.resolve()))
 
+    def test_config_root_must_be_an_object(self) -> None:
+        for content in ("[]", "null", "42", '"value"'):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as tmpdir:
+                config_path = Path(tmpdir) / "config.json"
+                config_path.write_text(content, encoding="utf-8")
+                with self.assertRaisesRegex(ConfigError, "JSON object"):
+                    Settings.load(str(config_path))
+
     def test_news_settings_are_exposed_in_diagnostics(self) -> None:
         settings = Settings(news_enabled=True, news_digest_size=4, news_summary_max_characters=200)
         diagnostics = settings.sanitized_diagnostics()

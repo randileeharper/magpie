@@ -53,41 +53,44 @@ class ExaSearchClient:
         }
         if not live:
             return report
-        if self.settings.search_transport in {"mcp_first", "mcp_only"}:
-            with self._client() as client:
-                response = client.post(
-                    self.settings.search_mcp_url,
-                    headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
-                    json={
-                        "jsonrpc": "2.0",
-                        "id": "doctor",
-                        "method": "tools/call",
-                        "params": {"name": self.settings.search_mcp_tool_name, "arguments": {"query": "test", "numResults": 1}},
-                    },
-                )
-            report["mcp_status_code"] = response.status_code
+        try:
+            if self.settings.search_transport in {"mcp_first", "mcp_only"}:
+                with self._client() as client:
+                    response = client.post(
+                        self.settings.search_mcp_url,
+                        headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": "doctor",
+                            "method": "tools/call",
+                            "params": {"name": self.settings.search_mcp_tool_name, "arguments": {"query": "test", "numResults": 1}},
+                        },
+                    )
+                report["mcp_status_code"] = response.status_code
+            elif self.settings.search_transport == "api_only" and self.settings.search_api_key:
+                with self._client() as client:
+                    response = client.post(
+                        self.settings.search_base_url.rstrip("/") + "/search",
+                        headers={
+                            "x-api-key": self.settings.search_api_key,
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "query": "test",
+                            "type": "auto",
+                            "numResults": 1,
+                            "contents": {"text": {"maxCharacters": 500}, "highlights": True},
+                        },
+                    )
+                report["api_status_code"] = response.status_code
+            else:
+                return report
             if response.status_code >= 400:
                 report["status"] = "error"
                 report["message"] = response.text[:300]
-        elif self.settings.search_transport == "api_only" and self.settings.search_api_key:
-            with self._client() as client:
-                response = client.post(
-                    self.settings.search_base_url.rstrip("/") + "/search",
-                    headers={
-                        "x-api-key": self.settings.search_api_key,
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "query": "test",
-                        "type": "auto",
-                        "numResults": 1,
-                        "contents": {"text": {"maxCharacters": 500}, "highlights": True},
-                    },
-                )
-            report["api_status_code"] = response.status_code
-            if response.status_code >= 400:
-                report["status"] = "error"
-                report["message"] = response.text[:300]
+        except httpx.RequestError as exc:
+            report["status"] = "error"
+            report["message"] = f"Exa live check failed: {exc}"
         return report
 
     def _search_via_mcp(self, request: SearchRequest) -> list[SearchResultRecord]:

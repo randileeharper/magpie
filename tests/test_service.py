@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -187,6 +188,18 @@ class FakeWeatherClient:
         )
 
 
+class BlockingWeatherClient(FakeWeatherClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def get_weather(self, zip_code, kind):
+        self.started.set()
+        self.release.wait(2)
+        return super().get_weather(zip_code, kind)
+
+
 class AnimeRoutingResolver(FakeResolverClient):
     def __init__(self, kind=AnimeRequestKind.CREDITS) -> None:
         super().__init__()
@@ -363,6 +376,42 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertTrue(any("could not determine a US ZIP code" in item for item in result.warnings))
 
+    def test_cancellation_wins_race_with_specialized_completion(self) -> None:
+        weather = BlockingWeatherClient()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(
+                tmpdir,
+                resolver=WeatherRoutingResolver(),
+                weather_client=weather,
+            )
+            holder = {}
+
+            thread = threading.Thread(
+                target=lambda: holder.setdefault(
+                    "result",
+                    service.research(
+                        ResearchRequest(question="what's the weather in 98230?"),
+                        run_id="weather-task",
+                    ),
+                )
+            )
+            thread.start()
+            self.assertTrue(weather.started.wait(1))
+            service.cancel_run("weather-task")
+            weather.release.set()
+            thread.join(2)
+
+            run = service.storage.get_run("weather-task")
+            with service.storage._connect() as connection:
+                final_answer = connection.execute(
+                    "SELECT 1 FROM final_answers WHERE run_id='weather-task'"
+                ).fetchone()
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(run["status"], "cancelled")
+        self.assertEqual(holder["result"].stop_reason.value, "cancelled")
+        self.assertIsNone(final_answer)
+
     def test_news_route_bypasses_web_research(self) -> None:
         class ExplodingSearch(FakeSearchClient):
             def search(self, request):
@@ -380,8 +429,25 @@ class ServiceTests(unittest.TestCase):
 
         self.assertEqual(result.status, "ok")
         self.assertEqual(len(result.references), 3)
-        self.assertEqual(news.calls[0][1], 3)
+        self.assertEqual(news.calls[0][1], 5)
         self.assertEqual(result.stop_reason.value, "specialized_route")
+
+    def test_news_answer_is_populated_when_references_are_disabled(self) -> None:
+        news = FakeNewsClient()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(
+                tmpdir,
+                resolver=NewsRoutingResolver(),
+                news_client=news,
+            )
+            result = service.research(
+                ResearchRequest(question="what's the latest AI news?", max_references=0)
+            )
+
+        self.assertEqual(result.status, "ok")
+        self.assertIn("Story 1", result.answer)
+        self.assertEqual(result.references, [])
+        self.assertEqual(news.calls[0][1], 5)
 
     def test_news_unsupported_topic_falls_back_to_web_research(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -712,6 +778,16 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(run["status"], "cancelled")
             self.assertEqual(run["stop_reason"], "cancelled")
             service.storage.close()
+
+    def test_cancel_run_does_not_rewrite_completed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            result = service.research(ResearchRequest(question="Who is the mayor of New York?"))
+            service.cancel_run(result.run_id)
+            run = service.storage.get_run(result.run_id)
+
+        self.assertEqual(run["status"], "completed")
+        self.assertEqual(run["cancel_requested"], 0)
 
     def test_fetches_top_five_results_at_most(self) -> None:
         class ManyResultsSearch(FakeSearchClient):

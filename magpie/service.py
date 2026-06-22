@@ -86,8 +86,7 @@ class ResearchService:
     _telemetry_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def cancel_run(self, run_id: str) -> None:
-        self.storage.request_cancel(run_id)
-        if self.storage.mark_run_cancelled(run_id):
+        if self.storage.request_cancel(run_id) and self.storage.mark_run_cancelled(run_id):
             self.storage.append_event(run_id, "run_cancelled", {"run_id": run_id})
             self._emit_run_event(
                 run_id,
@@ -627,8 +626,10 @@ class ResearchService:
         elapsed = round((perf_counter() - started) * 1000, 2)
         self._record_timing(timings, "weather", elapsed)
         references = [report.reference][: max(0, request.max_references)]
-        self.storage.save_final_answer(run_id, report.summary, report.answer, references)
-        self.storage.update_run_status(run_id, "completed", StopReason.SPECIALIZED_ROUTE.value)
+        self._finalize_storage(
+            run_id, report.summary, report.answer, references, "completed",
+            StopReason.SPECIALIZED_ROUTE,
+        )
         self._record_specialized_source(run_id, report.reference, "neonhail", elapsed)
         self._record_run_finished(
             run_id,
@@ -718,6 +719,8 @@ class ResearchService:
                         f"Japanese voice cast information for {title}.", answer, reference
                     )
             self._record_timing(timings, "anime", round((perf_counter() - started) * 1000, 2))
+        except ResearchCancelled:
+            raise
         except Exception as exc:  # noqa: BLE001
             self._record_operation_error(run_id, "anime", "specialized_lookup", exc)
             warnings.append(f"Specialized anime lookup failed; used web research instead: {exc}")
@@ -725,8 +728,10 @@ class ResearchService:
             self._select_route(run_id, RequestRoute.WEB_RESEARCH.value, str(exc))
             return None
         references = [report.reference][: max(0, request.max_references)]
-        self.storage.save_final_answer(run_id, report.summary, report.answer, references)
-        self.storage.update_run_status(run_id, "completed", StopReason.SPECIALIZED_ROUTE.value)
+        self._finalize_storage(
+            run_id, report.summary, report.answer, references, "completed",
+            StopReason.SPECIALIZED_ROUTE,
+        )
         self._record_specialized_source(
             run_id, report.reference, "anilist", timings.get("anime", [0.0])[-1]
         )
@@ -763,8 +768,7 @@ class ResearchService:
                 self._select_route(run_id, RequestRoute.WEB_RESEARCH.value, "unsupported_news_topic")
                 return None
             started = perf_counter()
-            limit = min(self.settings.news_digest_size, max(0, request.max_references))
-            report = self.news_client.get_news(news_request, limit)
+            report = self.news_client.get_news(news_request, self.settings.news_digest_size)
             self._record_timing(timings, "news", round((perf_counter() - started) * 1000, 2))
         except NewsError as exc:
             self._record_operation_error(run_id, "news", "get_news", exc)
@@ -774,8 +778,10 @@ class ResearchService:
             return None
         warnings.extend(report.warnings)
         references = report.references[: max(0, request.max_references)]
-        self.storage.save_final_answer(run_id, report.summary, report.answer, references)
-        self.storage.update_run_status(run_id, "completed", StopReason.SPECIALIZED_ROUTE.value)
+        self._finalize_storage(
+            run_id, report.summary, report.answer, references, "completed",
+            StopReason.SPECIALIZED_ROUTE,
+        )
         # News references come from one batched RSS fetch; amortize the
         # batch duration across references rather than overstating each.
         news_elapsed = timings.get("news", [0.0])[-1]
@@ -1052,8 +1058,14 @@ class ResearchService:
     ) -> ResearchResult:
         self._raise_if_cancelled(run_id)
         references = self.storage.get_source_references(draft.cited_source_ids)[: max(0, request.max_references)]
-        self.storage.save_final_answer(run_id, draft.summary, draft.answer, references)
-        self.storage.update_run_status(run_id, "completed" if status == "ok" else "partial", reason.value)
+        self._finalize_storage(
+            run_id,
+            draft.summary,
+            draft.answer,
+            references,
+            "completed" if status == "ok" else "partial",
+            reason,
+        )
         self._record_run_finished(
             run_id,
             "research.run.completed" if status == "ok" else "research.run.partial",
@@ -1071,6 +1083,20 @@ class ResearchService:
 
     def _raise_if_cancelled(self, run_id: str) -> None:
         if self.storage.is_cancel_requested(run_id):
+            raise ResearchCancelled("Run was cancelled before completion.")
+
+    def _finalize_storage(
+        self,
+        run_id: str,
+        summary: str,
+        answer: str,
+        references: list[Any],
+        status: str,
+        reason: StopReason,
+    ) -> None:
+        if not self.storage.finalize_run(
+            run_id, summary, answer, references, status, reason.value
+        ):
             raise ResearchCancelled("Run was cancelled before completion.")
 
     def _min_fetched_at(self, freshness: FreshnessClass) -> str:

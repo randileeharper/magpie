@@ -106,7 +106,9 @@ class SDKResearchAgentExecutor(AgentExecutor):
                 parts=[new_text_part(text_response),
                        new_data_part(payload, media_type="application/json")],
             )
-            if result.status in {"ok", "partial"}:
+            if result.stop_reason == StopReason.CANCELLED:
+                await updater.update_status(TaskState.TASK_STATE_CANCELED, message)
+            elif result.status in {"ok", "partial"}:
                 await updater.complete(message)
             else:
                 await updater.failed(message)

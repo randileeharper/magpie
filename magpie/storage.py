@@ -125,19 +125,21 @@ class SQLiteStorage:
                 (status, stop_reason, utc_now(), run_id),
             )
 
-    def request_cancel(self, run_id: str) -> None:
+    def request_cancel(self, run_id: str) -> bool:
         with self._connect() as connection:
-            connection.execute(
-                "UPDATE research_runs SET cancel_requested=1, updated_at=? WHERE run_id=?",
+            cursor = connection.execute(
+                """UPDATE research_runs SET cancel_requested=1, updated_at=?
+                   WHERE run_id=? AND status='running'""",
                 (utc_now(), run_id),
             )
+        return cursor.rowcount > 0
 
     def mark_run_cancelled(self, run_id: str) -> bool:
         with self._connect() as connection:
             cursor = connection.execute(
                 """UPDATE research_runs
                    SET status='cancelled', stop_reason=?, updated_at=?
-                   WHERE run_id=? AND status != 'cancelled'""",
+                   WHERE run_id=? AND status='running' AND cancel_requested=1""",
                 (StopReason.CANCELLED.value, utc_now(), run_id),
             )
         return cursor.rowcount > 0
@@ -341,13 +343,56 @@ class SQLiteStorage:
         summary = valid_unicode(summary)
         answer = valid_unicode(answer)
         with self._connect() as connection:
-            connection.execute(
-                """INSERT INTO final_answers VALUES (?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(run_id) DO UPDATE SET summary=excluded.summary, answer=excluded.answer,
-                   references_json=excluded.references_json, created_at=excluded.created_at""",
-                (str(uuid.uuid4()), run_id, summary, answer,
-                 json.dumps([to_jsonable(r) for r in references], sort_keys=True), utc_now()),
+            self._save_final_answer(connection, run_id, summary, answer, references)
+
+    def finalize_run(
+        self,
+        run_id: str,
+        summary: str,
+        answer: str,
+        references: list[Reference],
+        status: str,
+        stop_reason: str,
+    ) -> bool:
+        """Persist an answer only when the run is still active and not canceled."""
+        summary = valid_unicode(summary)
+        answer = valid_unicode(answer)
+        now = utc_now()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE research_runs
+                   SET status=?, stop_reason=?, updated_at=?
+                   WHERE run_id=? AND status='running' AND cancel_requested=0""",
+                (status, stop_reason, now, run_id),
             )
+            if cursor.rowcount == 0:
+                return False
+            self._save_final_answer(connection, run_id, summary, answer, references, created_at=now)
+        return True
+
+    def _save_final_answer(
+        self,
+        connection: sqlite3.Connection,
+        run_id: str,
+        summary: str,
+        answer: str,
+        references: list[Reference],
+        *,
+        created_at: str | None = None,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO final_answers VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(run_id) DO UPDATE SET summary=excluded.summary, answer=excluded.answer,
+               references_json=excluded.references_json, created_at=excluded.created_at""",
+            (
+                str(uuid.uuid4()),
+                run_id,
+                summary,
+                answer,
+                json.dumps([to_jsonable(r) for r in references], sort_keys=True),
+                created_at or utc_now(),
+            ),
+        )
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:

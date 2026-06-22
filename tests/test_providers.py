@@ -7,12 +7,14 @@ import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import get_type_hints
 
 import httpx
 
 from magpie.config import Settings
 from magpie.models import AnimeField, FreshnessClass, NewsCategory, NewsRequest, NewsRequestKind, NewsTimeScope, SearchRequest, WeatherKind
 from magpie.providers.anilist import AniListClient
+from magpie.providers.base import AnimeClient
 from magpie.providers.exa import ExaSearchClient
 from magpie.providers.neonhail import NeonHailWeatherClient
 from magpie.providers.news_rss import NewsRSSClient
@@ -80,6 +82,30 @@ class ExaProviderTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].provider, "exa_api")
         self.assertEqual(len(calls), 2)
+
+    def test_live_doctor_reports_connection_failure(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("offline", request=request)
+
+        for transport, overrides in (
+            ("mcp_only", {}),
+            ("api_only", {"search_api_key": "secret"}),
+        ):
+            with self.subTest(transport=transport), tempfile.TemporaryDirectory() as tmpdir:
+                client = ExaSearchClient(
+                    settings=self._settings(
+                        tmpdir, search_transport=transport, **overrides
+                    ),
+                    transport=httpx.MockTransport(handler),
+                )
+                report = client.doctor_check(live=True)
+
+            self.assertEqual(report["status"], "error")
+            self.assertIn("offline", report["message"])
+
+    def test_anime_protocol_type_hints_resolve(self) -> None:
+        hints = get_type_hints(AnimeClient.get_credits)
+        self.assertIn("return", hints)
 
 
 class NeonHailProviderTests(unittest.TestCase):
