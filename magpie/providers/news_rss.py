@@ -60,10 +60,14 @@ class NewsRSSClient:
     def __init__(self, settings: Settings, transport: httpx.BaseTransport | None = None) -> None:
         self.settings = settings
         self.transport = transport
-        self._local_tz = datetime.now().astimezone().tzinfo or UTC
         self._feeds = self._load_registry()
         self._cache: dict[str, tuple[float, list[NewsItem]]] = {}
         self._cache_lock = Lock()
+
+    @property
+    def _local_tz(self):
+        # Resolved per call so long-running processes pick up DST transitions.
+        return datetime.now().astimezone().tzinfo or UTC
 
     def get_news(self, request: NewsRequest, max_items: int) -> NewsReport:
         if request.kind != NewsRequestKind.CATEGORY or request.category is None:
@@ -228,12 +232,10 @@ class NewsRSSClient:
         body = self._fetch_feed_bytes(feed.url)
         parsed = feedparser.parse(body)
         items: list[NewsItem] = []
-        discarded_undated = 0
         feed_name = valid_unicode(str(parsed.feed.get("title") or feed.name)).strip() or feed.name
         for entry in parsed.entries:
             published = self._entry_datetime(entry)
             if published is None:
-                discarded_undated += 1
                 continue
             title = self._clean_text(str(entry.get("title", "")).strip())
             url = valid_unicode(str(entry.get("link", "")).strip())
@@ -250,8 +252,6 @@ class NewsRSSClient:
                     category=category,
                 )
             )
-        if discarded_undated:
-            pass
         self._cache_put(feed.feed_id, items)
         return items
 
@@ -337,8 +337,12 @@ class NewsRSSClient:
                     break
                 if canonicalize_url(item.url) in used_urls:
                     continue
+                count = per_source.get(item.source_name, 0)
+                if count >= self.settings.news_per_source_limit:
+                    continue
                 selected.append(item)
                 used_urls.add(canonicalize_url(item.url))
+                per_source[item.source_name] = count + 1
         return selected
 
     def _time_window(self, scope: NewsTimeScope) -> tuple[datetime, datetime]:
@@ -369,7 +373,8 @@ class NewsRSSClient:
 
     def _format_local_time(self, value: str) -> str:
         dt = self._parse_iso(value)
-        return dt.strftime("%Y-%m-%d %I:%M %p %Z").replace(" 0", " ")
+        hour = dt.hour % 12 or 12
+        return dt.strftime(f"%Y-%m-%d {hour}:%M %p %Z")
 
     def _parse_iso(self, value: str) -> datetime:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(self._local_tz)
@@ -389,6 +394,9 @@ class NewsRSSClient:
 
     def _cache_put(self, feed_id: str, items: list[NewsItem]) -> None:
         if self.settings.news_cache_ttl_seconds == 0:
+            return
+        if not items:
+            # Don't cache empty results; a transient failure would blank the feed for the full TTL.
             return
         with self._cache_lock:
             self._cache[feed_id] = (time.monotonic() + self.settings.news_cache_ttl_seconds, items)

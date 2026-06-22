@@ -345,6 +345,62 @@ class NewsRSSProviderTests(unittest.TestCase):
 
         self.assertEqual(calls, 1)
 
+    def test_backfill_respects_per_source_limit(self) -> None:
+        now = datetime.now().astimezone().strftime("%a, %d %b %Y %H:%M:%S %z")
+        items = "\n".join(
+            f"<item><title>Story {i}</title><link>https://example.com/s{i}</link>"
+            f"<pubDate>{now}</pubDate><description>d</description></item>"
+            for i in range(4)
+        )
+        feed = f"""<?xml version="1.0"?><rss><channel><title>Prolific</title>{items}</channel></rss>"""
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text=feed)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "feeds.json"
+            registry_path.write_text(json.dumps([
+                {"id": "ars-ai", "name": "Prolific", "url": "https://feeds.test/p", "categories": ["ai"], "enabled": True},
+                {"id": "techcrunch-ai", "name": "TechCrunch AI", "url": "https://techcrunch.com/category/artificial-intelligence/feed/", "categories": ["ai"], "enabled": False},
+            ]), encoding="utf-8")
+            client = NewsRSSClient(
+                self._settings(tmpdir, news_feed_registry_path=str(registry_path)),
+                transport=httpx.MockTransport(handler),
+            )
+            report = client.get_news(
+                NewsRequest(NewsRequestKind.CATEGORY, NewsCategory.AI, NewsTimeScope.LAST_24_HOURS),
+                5,
+            )
+
+        # news_per_source_limit defaults to 1 in these tests; the backfill loop
+        # must honor the same cap as the primary selection loop.
+        self.assertEqual(len(report.references), 1)
+
+    def test_empty_feed_results_are_not_cached(self) -> None:
+        calls = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200, text="<?xml version='1.0'?><rss><channel><title>Empty</title></channel></rss>")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "feeds.json"
+            registry_path.write_text(json.dumps([
+                {"id": "ars-ai", "name": "Empty", "url": "https://feeds.test/empty", "categories": ["ai"], "enabled": True},
+                {"id": "techcrunch-ai", "name": "TechCrunch AI", "url": "https://techcrunch.com/category/artificial-intelligence/feed/", "categories": ["ai"], "enabled": False},
+            ]), encoding="utf-8")
+            client = NewsRSSClient(
+                self._settings(tmpdir, news_feed_registry_path=str(registry_path), news_cache_ttl_seconds=300),
+                transport=httpx.MockTransport(handler),
+            )
+            request = NewsRequest(NewsRequestKind.CATEGORY, NewsCategory.AI, NewsTimeScope.LAST_24_HOURS)
+            client.get_news(request, 5)
+            client.get_news(request, 5)
+
+        # An empty digest must not be cached, so a transient blank feed is re-fetched.
+        self.assertEqual(calls, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
