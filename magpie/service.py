@@ -8,7 +8,6 @@ import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
-from pathlib import Path
 from typing import Any
 
 from .errors import AnimeError, FetchError, NewsError, ResearchCancelled, ResolverError, WeatherError
@@ -1125,7 +1124,7 @@ class ResearchService:
         self._trace(run_id, "RUN STARTED", [f"question: {question}"])
 
     def _trace(self, run_id: str, section: str, lines: list[str]) -> None:
-        path = Path(self.settings.fetch_debug_log_path)
+        path = self.settings.expanded_fetch_debug_log_path
         path.parent.mkdir(parents=True, exist_ok=True)
         with _FETCH_LOG_LOCK, path.open("a", encoding="utf-8", errors="backslashreplace") as handle:
             handle.write(f"=== {section} ===\nrun_id: {run_id}\n")

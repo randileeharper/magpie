@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from time import perf_counter
 from typing import Any
 
@@ -36,6 +36,7 @@ from ..text import valid_unicode, valid_unicode_tree
 from .base import reasoning_request_options
 
 _DEBUG_LOG_LOCK = threading.Lock()
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -393,6 +394,9 @@ class OpenAICompatibleResolverClient:
             schema=schema,
         )
         if self._payload_contains_control_artifacts(payload):
+            LOGGER.warning(
+                "Synthesis response contained control artifacts; retrying with hardened prompt."
+            )
             payload = self._ask_json(
                 "synthesize_retry",
                 system=(
@@ -440,7 +444,7 @@ class OpenAICompatibleResolverClient:
     def begin_request_debug_log(self, run_id: str, question: str) -> None:
         self._local.run_id = run_id
         self._local.call_index = 0
-        path = Path(self.settings.resolver_debug_log_path)
+        path = self.settings.expanded_resolver_debug_log_path
         path.parent.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         with _DEBUG_LOG_LOCK, path.open("a", encoding="utf-8", errors="backslashreplace") as handle:
@@ -564,7 +568,7 @@ class OpenAICompatibleResolverClient:
     def _log_request_start(
         self, *, step: str, system_prompt: str, user_payload: Any
     ) -> None:
-        path = Path(self.settings.resolver_debug_log_path)
+        path = self.settings.expanded_resolver_debug_log_path
         if not path.parent.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
         with _DEBUG_LOG_LOCK, path.open("a", encoding="utf-8", errors="backslashreplace") as handle:
@@ -582,7 +586,7 @@ class OpenAICompatibleResolverClient:
     def _log_request_response(
         self, *, elapsed_ms: float, response_status_code: int, response_text: str | None
     ) -> None:
-        path = Path(self.settings.resolver_debug_log_path)
+        path = self.settings.expanded_resolver_debug_log_path
         if not path.parent.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
         with _DEBUG_LOG_LOCK, path.open("a", encoding="utf-8", errors="backslashreplace") as handle:
@@ -594,7 +598,7 @@ class OpenAICompatibleResolverClient:
                 handle.write("\n\n")
 
     def _log_request_error(self, *, elapsed_ms: float, error_text: str) -> None:
-        path = Path(self.settings.resolver_debug_log_path)
+        path = self.settings.expanded_resolver_debug_log_path
         if not path.parent.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
         with _DEBUG_LOG_LOCK, path.open("a", encoding="utf-8", errors="backslashreplace") as handle:
