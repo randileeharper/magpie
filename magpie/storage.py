@@ -284,7 +284,7 @@ class SQLiteStorage:
                     source = connection.execute(
                         "SELECT canonical_url, fetched_at FROM sources WHERE source_id=?", (source_id,)
                     ).fetchone()
-                    if not source or source["fetched_at"] < min_fetched_at:
+                    if not source or _parse_utc(source["fetched_at"]) < _parse_utc(min_fetched_at):
                         continue
                     rejected = connection.execute(
                         "SELECT 1 FROM source_rejections WHERE normalized_query=? AND source_id=?",

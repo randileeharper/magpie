@@ -126,6 +126,61 @@ class StorageTests(unittest.TestCase):
         self.assertNotIn(rejected, cached)
         self.assertEqual(rejected_cached, [])
 
+    def test_exact_query_cache_excludes_sources_older_than_ttl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = SQLiteStorage(Path(tmpdir) / "magpie.db")
+            storage.initialize()
+            run_id = storage.create_run("question", None, FreshnessClass.EVERGREEN, "compact")
+            source_id = storage.upsert_source(
+                run_id, "https://example.com/accepted", "Accepted", None, None, "answer", {}
+            )
+            reference = Reference(
+                source_id, "Accepted", "https://example.com/accepted", None, None, None, SourceKind.PAGE_FETCH
+            )
+            storage.save_final_answer(run_id, "summary", "answer", [reference])
+            storage.update_run_status(run_id, "completed")
+
+            # Overwrite fetched_at to a past timestamp that predates the cutoff.
+            stale = "2020-01-01T00:00:00Z"
+            with storage._connect() as connection:
+                connection.execute(
+                    "UPDATE sources SET fetched_at=? WHERE source_id=?", (stale, source_id)
+                )
+            cutoff = "2026-01-01T00:00:00Z"
+            cached = storage.find_fresh_source_ids_for_exact_query("question", cutoff)
+        self.assertEqual(cached, [])
+
+    def test_exact_query_cache_accepts_source_with_offset_notation(self) -> None:
+        """A source whose fetched_at uses +00:00 offset must not be wrongly
+        excluded when the cutoff uses Z notation for the same instant.
+
+        String comparison would treat ``+`` (0x2B) as less than ``Z`` (0x5A)
+        and mark the source stale; datetime comparison correctly treats the
+        instants as equal.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = SQLiteStorage(Path(tmpdir) / "magpie.db")
+            storage.initialize()
+            run_id = storage.create_run("question", None, FreshnessClass.EVERGREEN, "compact")
+            source_id = storage.upsert_source(
+                run_id, "https://example.com/accepted", "Accepted", None, None, "answer", {}
+            )
+            reference = Reference(
+                source_id, "Accepted", "https://example.com/accepted", None, None, None, SourceKind.PAGE_FETCH
+            )
+            storage.save_final_answer(run_id, "summary", "answer", [reference])
+            storage.update_run_status(run_id, "completed")
+
+            with storage._connect() as connection:
+                connection.execute(
+                    "UPDATE sources SET fetched_at=? WHERE source_id=?",
+                    ("2026-06-25T12:00:00+00:00", source_id),
+                )
+            cached = storage.find_fresh_source_ids_for_exact_query(
+                "question", "2026-06-25T12:00:00Z"
+            )
+        self.assertEqual(cached, [source_id])
+
 
 if __name__ == "__main__":
     unittest.main()
