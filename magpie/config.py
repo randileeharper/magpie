@@ -72,8 +72,8 @@ class Settings:
     resolver_api_key: str = "your-openai-compatible-key"
     resolver_include_reasoning: bool = False
     resolver_include_raw_output: bool = False
-    resolver_debug_log_path: str = "/tmp/magpie-resolver.log"
-    fetch_debug_log_path: str = "/tmp/magpie-fetch.log"
+    resolver_debug_log_path: str = "~/.local/share/magpie/magpie-resolver.log"
+    fetch_debug_log_path: str = "~/.local/share/magpie/magpie-fetch.log"
     include_timing_debug: bool = False
     response_detail: ResponseDetail = ResponseDetail.COMPACT
     max_search_queries_per_run: int = 8
@@ -209,6 +209,14 @@ class Settings:
     @property
     def expanded_database_path(self) -> Path:
         return Path(self.database_path).expanduser()
+
+    @property
+    def expanded_resolver_debug_log_path(self) -> Path:
+        return Path(self.resolver_debug_log_path).expanduser()
+
+    @property
+    def expanded_fetch_debug_log_path(self) -> Path:
+        return Path(self.fetch_debug_log_path).expanduser()
 
     def sanitized_diagnostics(self) -> dict[str, Any]:
         return {

@@ -36,6 +36,13 @@ class SettingsTests(unittest.TestCase):
         self.assertNotIn("resolver_api_key", diagnostics)
         self.assertIn("fetch_debug_log_path", diagnostics)
 
+    def test_debug_log_paths_default_to_private_location(self) -> None:
+        settings = Settings()
+        self.assertNotIn("/tmp/", settings.resolver_debug_log_path)
+        self.assertNotIn("/tmp/", settings.fetch_debug_log_path)
+        self.assertTrue(settings.expanded_resolver_debug_log_path.as_posix().startswith(str(Path.home())))
+        self.assertTrue(settings.expanded_fetch_debug_log_path.as_posix().startswith(str(Path.home())))
+
     def test_load_discovers_local_config_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.json"

@@ -219,8 +219,8 @@ Use `magpie ask ... --debug` or enable `include_timing_debug` to include
 timings and run events in results. Shared resolver and fetch logs are tagged
 with run IDs:
 
-- `/tmp/magpie-resolver.log`
-- `/tmp/magpie-fetch.log`
+- `~/.local/share/magpie/magpie-resolver.log`
+- `~/.local/share/magpie/magpie-fetch.log`
 
 Raw model output is written to the resolver log only when
 `resolver_include_raw_output` is enabled. Logs may contain full prompts, source

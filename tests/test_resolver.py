@@ -264,10 +264,15 @@ class OpenAICompatibleResolverTests(unittest.TestCase):
                 settings=self._settings(tmpdir),
                 transport=httpx.MockTransport(handler),
             )
-            draft = client.synthesize("question", evidence)
+            with self.assertLogs("magpie.providers.openai_compatible", level="WARNING") as log_records:
+                draft = client.synthesize("question", evidence)
 
         self.assertEqual(call_count, 2)
         self.assertEqual(draft.answer, "Clean answer")
+        self.assertTrue(
+            any("control artifacts" in record for record in log_records.output),
+            f"Expected a warning about control artifacts, got: {log_records.output}",
+        )
 
     def test_propose_query_uses_state_aware_user_message(self) -> None:
         captured_payloads: list[dict[str, object]] = []
