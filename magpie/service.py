@@ -847,6 +847,27 @@ class ResearchService:
             reference = self.storage.get_source_references([cached["source_id"]])[0]
             self._record_cache_hit(run_id, reference, "url")
             return cached["source_id"], cached["text"], [], [], 0.0
+        if result.inline_text and len(result.inline_text.strip()) >= 500:
+            started = perf_counter()
+            source_id = self.storage.upsert_source(
+                run_id, result.url, result.title, result.site_name, result.published_at, result.inline_text,
+                {"provider_result": result.raw_result, "provider": result.provider},
+                SourceKind.SEARCH_RESULT_FALLBACK, search_result_id, None,
+            )
+            elapsed = round((perf_counter() - started) * 1000, 2)
+            self._record_source_fetched(
+                run_id,
+                source_id,
+                search_result_id=search_result_id,
+                url=result.url,
+                title=result.title,
+                provider=result.provider or self.settings.search_provider,
+                source_kind=SourceKind.SEARCH_RESULT_FALLBACK.value,
+                published_at=result.published_at,
+                duration_ms=elapsed,
+                fallback_content=False,
+            )
+            return source_id, result.inline_text, [], [], elapsed
         started = perf_counter()
         try:
             self._set_stage(run_id, "fetch")
