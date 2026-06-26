@@ -352,7 +352,7 @@ class OpenAICompatibleResolverClient:
         )
         if explanatory:
             system += (
-                " This is an explanatory request. Write an essay using the provided sources, "
+                " This is an explanatory request. Write a short essay using the provided sources, "
                 "not a brief answer. If the sources cover only part of the topic, list the missing "
                 "facets in remaining_questions so further sources can be gathered."
             )
