@@ -335,10 +335,6 @@ class OpenAICompatibleResolverClient:
         system = (
             "Answer the question using all provided sources. Return compact JSON only. "
             "Write a thorough, self-contained answer in plain English markdown with real newline characters. "
-            "The answer must be exactly three paragraphs long. Start with a background paragraph that "
-            "introduces the topic and why it matters. Then write one or more paragraphs covering key "
-            "components and how it works, using specific details from the sources. End with a paragraph "
-            "on implications or practical use. Never write a single-paragraph answer. "
             "If a prior draft is provided, fold in its useful facts and improve the answer. "
             "Do not invent facts or source ids. "
             "Use only allowed_source_ids in cited_source_ids; set cited_source_ids to the subset whose facts you used. "
@@ -356,8 +352,11 @@ class OpenAICompatibleResolverClient:
         )
         if explanatory:
             system += (
-                " This is an explanatory request. Gather complementary facets such as background, purpose, key "
-                "components, and how it works before setting remaining_questions to []. If the sources cover only "
+                " This is an explanatory request. The answer must be exactly three paragraphs long. "
+                "Start with a background paragraph that introduces the topic and why it matters. "
+                "Then write a paragraph covering key components and how it works, using specific details from the sources. "
+                "End with a paragraph on implications or practical use. Never write a single-paragraph answer. "
+                "Gather complementary facets before setting remaining_questions to []. If the sources cover only "
                 "part of the topic, list the missing facets in remaining_questions so further sources can be gathered."
             )
         if procedural:
