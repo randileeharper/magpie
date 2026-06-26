@@ -95,6 +95,21 @@ class FakeResolverClient:
             remaining_questions=[],
         )
 
+    def compose(
+        self,
+        question: str,
+        evidence: list[EvidenceItem],
+        prior_draft: SynthesisDraft,
+    ) -> SynthesisDraft:
+        if not evidence:
+            return prior_draft
+        return SynthesisDraft(
+            summary=prior_draft.summary or f"Composed answer for: {question}",
+            answer=prior_draft.answer,
+            cited_source_ids=list(prior_draft.cited_source_ids),
+            remaining_questions=[],
+        )
+
     def reasoning_request_options(self) -> dict[str, object]:
         return reasoning_request_options(self.include_reasoning)
 

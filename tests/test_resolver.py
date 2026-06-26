@@ -18,6 +18,7 @@ from magpie.models import (
     PlanningContext,
     RequestRoute,
     RunBudget,
+    SynthesisDraft,
     WeatherKind,
 )
 from magpie.providers.openai_compatible import OpenAICompatibleResolverClient
@@ -273,6 +274,97 @@ class OpenAICompatibleResolverTests(unittest.TestCase):
             any("control artifacts" in record for record in log_records.output),
             f"Expected a warning about control artifacts, got: {log_records.output}",
         )
+
+    def test_compose_returns_composed_answer_with_all_evidence(self) -> None:
+        captured_payloads: list[dict[str, object]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured_payloads.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"summary":"Composed.","answer":"Para one.\\n\\nPara two.",'
+                                    '"cited_source_ids":["source-1","source-2"],"remaining_questions":[]}'
+                                )
+                            }
+                        }
+                    ]
+                },
+            )
+
+        evidence = [
+            EvidenceItem(evidence_id="e-1", source_id="source-1", excerpt="fact one", note="note"),
+            EvidenceItem(evidence_id="e-2", source_id="source-2", excerpt="fact two", note="note"),
+        ]
+        prior = SynthesisDraft(
+            summary="draft", answer="draft answer", cited_source_ids=["source-1", "source-2"],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(tmpdir),
+                transport=httpx.MockTransport(handler),
+            )
+            draft = client.compose("explain a2a", evidence, prior)
+
+        self.assertEqual(draft.summary, "Composed.")
+        self.assertEqual(draft.answer, "Para one.\n\nPara two.")
+        self.assertEqual(draft.cited_source_ids, ["source-1", "source-2"])
+        self.assertEqual(captured_payloads[0]["response_format"]["json_schema"]["name"], "magpie_compose")
+        user_payload = json.loads(captured_payloads[0]["messages"][1]["content"])
+        self.assertIn("evidence", user_payload)
+        self.assertEqual(len(user_payload["evidence"]), 2)
+
+    def test_compose_falls_back_to_prior_draft_on_empty_answer(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"message": {"content": '{"summary":"","answer":"","cited_source_ids":[],"remaining_questions":[]}'}}
+                    ]
+                },
+            )
+
+        evidence = [EvidenceItem(evidence_id="e-1", source_id="source-1", excerpt="fact", note="note")]
+        prior = SynthesisDraft(summary="draft", answer="draft answer", cited_source_ids=["source-1"])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(tmpdir),
+                transport=httpx.MockTransport(handler),
+            )
+            draft = client.compose("question", evidence, prior)
+
+        self.assertEqual(draft.answer, "draft answer")
+        self.assertEqual(draft.cited_source_ids, ["source-1"])
+
+    def test_compose_retries_after_control_artifacts(self) -> None:
+        call_count = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                content = '{"summary":"s","answer":"Lead <channel|>```json","cited_source_ids":["source-1"],"remaining_questions":[]}'
+            else:
+                content = '{"summary":"s","answer":"Clean para.","cited_source_ids":["source-1"],"remaining_questions":[]}'
+            return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+        evidence = [EvidenceItem(evidence_id="e-1", source_id="source-1", excerpt="fact", note="note")]
+        prior = SynthesisDraft(summary="draft", answer="draft", cited_source_ids=["source-1"])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(tmpdir),
+                transport=httpx.MockTransport(handler),
+            )
+            with self.assertLogs("magpie.providers.openai_compatible", level="WARNING"):
+                draft = client.compose("question", evidence, prior)
+
+        self.assertEqual(call_count, 2)
+        self.assertEqual(draft.answer, "Clean para.")
 
     def test_propose_query_uses_state_aware_user_message(self) -> None:
         captured_payloads: list[dict[str, object]] = []

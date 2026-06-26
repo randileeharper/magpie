@@ -327,6 +327,19 @@ class SQLiteStorage:
             )
         return item
 
+    def get_evidence_for_run(self, run_id: str, source_ids: list[str]) -> list[EvidenceItem]:
+        if not source_ids:
+            return []
+        placeholders = ",".join("?" for _ in source_ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT evidence_id, source_id, excerpt, note FROM evidence_items
+                   WHERE run_id=? AND source_id IN ({placeholders})
+                   ORDER BY created_at""",
+                (run_id, *source_ids),
+            ).fetchall()
+        return [EvidenceItem(row["evidence_id"], row["source_id"], row["excerpt"], row["note"]) for row in rows]
+
     def get_source_references(self, source_ids: list[str]) -> list[Reference]:
         references: list[Reference] = []
         with self._connect() as connection:

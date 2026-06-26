@@ -58,6 +58,13 @@ class ResolverClient(Protocol):
         prior_draft: SynthesisDraft | None = None,
     ) -> SynthesisDraft: ...
 
+    def compose(
+        self,
+        question: str,
+        evidence: list[EvidenceItem],
+        prior_draft: SynthesisDraft,
+    ) -> SynthesisDraft: ...
+
     def reasoning_request_options(self) -> dict[str, object]: ...
 
 

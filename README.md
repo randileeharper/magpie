@@ -179,6 +179,15 @@ new source plus a bounded prior draft. Resolver calls are also serialized across
 concurrent runs because the expected deployment target is a smaller local model,
 not a high-throughput frontier API.
 
+After the incremental loop finishes, a final composition pass asks the resolver
+to write a fresh, thorough answer from all cited evidence at once. The compose
+prompt prefers several substantive paragraphs over a single terse paragraph and
+instructs the resolver to commit to the single best approach when sources
+present competing complete options (for example, different recipes) rather than
+surveying or enumerating alternatives. If composition fails, the last
+incremental draft is used as a fallback. Specialized routes (weather, anime,
+news) bypass synthesis and composition entirely and answer directly.
+
 ## Grounding And Cache Behavior
 
 Search results, fetched snapshots, evidence, run events, and final answers are

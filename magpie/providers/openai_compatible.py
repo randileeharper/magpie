@@ -320,6 +320,9 @@ class OpenAICompatibleResolverClient:
         recipe = procedural and any(
             signal in question.lower() for signal in ("recipe", "cook", "bake", "bread", "dough")
         )
+        explanatory = question.lower().strip().startswith(
+            ("explain ", "what is ", "what are ", "describe ", "overview of ", "introduction to ")
+        )
         system = (
             "Answer the question using the single new source. Return compact JSON only. "
             "If a prior draft is provided, improve it only with useful facts from the new source. "
@@ -328,11 +331,20 @@ class OpenAICompatibleResolverClient:
             "Set remaining_questions to [] only when the answer is directly usable and complete. "
             "Set source_answers_question=false if the new source does not contribute facts that answer the question. "
             "When false, return an empty answer, empty cited_source_ids, and put the missing information in remaining_questions. "
+            "When sources present different complete approaches (a different recipe, method, or full explanation of the "
+            "same thing), commit to the single best one rather than surveying or enumerating alternatives. "
             "Do not put citations, source ids, or an Additional Resources section in the answer text. "
             "Write the answer as plain English markdown with real newline characters, not escaped \\n sequences. "
             "Do not mix languages, transliterations, or stray non-English text unless the source explicitly requires it. "
             "Do not include decorative bolded step titles unless they improve clarity. Prefer clean numbered steps and short paragraphs."
         )
+        if explanatory:
+            system += (
+                " This is an explanatory request. A single source rarely covers a topic completely: gather "
+                "complementary facets such as background, purpose, key components, and how it works before setting "
+                "remaining_questions to []. If the current source covers only part of the topic, list the missing "
+                "facets in remaining_questions so further sources can be gathered."
+            )
         if procedural:
             system += (
                 " This is a procedural request. Return one coherent, directly usable method with an ordered list of concrete steps. "
@@ -436,6 +448,105 @@ class OpenAICompatibleResolverClient:
             cited_source_ids=cited,
             remaining_questions=remaining_questions,
             source_answers_question=True,
+        )
+
+    def compose(
+        self,
+        question: str,
+        evidence: list[EvidenceItem],
+        prior_draft: SynthesisDraft,
+    ) -> SynthesisDraft:
+        if not evidence:
+            return prior_draft
+        max_chars = self.settings.max_synthesis_input_characters
+        bounded = [
+            EvidenceItem(item.evidence_id, item.source_id, item.excerpt[:max_chars], item.note)
+            for item in evidence
+        ]
+        allowed_source_ids = [item.source_id for item in bounded]
+        procedural = question.lower().strip().startswith(("how do i ", "how to ", "steps to ", "guide to "))
+        system = (
+            "You are composing the final answer to the user's question from all gathered evidence. "
+            "Write a thorough, self-contained answer in plain English markdown with real newline characters. "
+            "Cover the relevant facets of the topic: background, purpose, key components, and how it works, "
+            "as the question warrants. Prefer several substantive paragraphs over a single terse paragraph. "
+            "Use only facts supported by the provided sources. Do not invent facts or source ids. "
+            "Do not put citations, source ids, or an Additional Resources section in the answer text. "
+            "Do not mix languages, transliterations, or stray non-English text unless a source explicitly requires it. "
+            "When sources present different complete approaches (a different recipe, method, or full explanation of "
+            "the same thing), choose the single best one by completeness and clarity, commit to it, and write that. "
+            "Do not survey what most sources say. Do not enumerate alternatives or present multiple options unless the "
+            "user explicitly asked for a comparison. "
+            "Return compact JSON only. "
+            "Set cited_source_ids to the subset of allowed_source_ids whose facts you actually used. "
+            "Set remaining_questions to [] only when the answer is complete and directly usable."
+        )
+        if procedural:
+            system += (
+                " This is a procedural request. Return one coherent, directly usable method with an ordered list of "
+                "concrete steps. Each step must be actionable and written as a normal sentence. Do not merely name "
+                "stages or techniques. Avoid nested lists unless a source clearly requires them."
+            )
+        user = {
+            "question": question,
+            "prior_draft": {
+                "summary": prior_draft.summary,
+                "answer": self._bounded_prior_answer(prior_draft.answer),
+            },
+            "evidence": [
+                {"source_id": item.source_id, "content": item.excerpt}
+                for item in bounded
+            ],
+            "allowed_source_ids": allowed_source_ids,
+        }
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "answer": {"type": "string"},
+                "cited_source_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "remaining_questions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["summary", "answer", "cited_source_ids", "remaining_questions"],
+            "additionalProperties": False,
+        }
+        payload = self._ask_json(
+            "compose",
+            system=system,
+            user=user,
+            schema_name="magpie_compose",
+            schema=schema,
+        )
+        if self._payload_contains_control_artifacts(payload):
+            LOGGER.warning("Compose response contained control artifacts; retrying with hardened prompt.")
+            payload = self._ask_json(
+                "compose_retry",
+                system=(
+                    system
+                    + " Do not include any transport or control markers inside string values. "
+                    + "Never emit tokens like <channel|>, <|tool_response>, ```json, or stray braces inside the answer text."
+                ),
+                user=user,
+                schema_name="magpie_compose_retry",
+                schema=schema,
+            )
+        cited = [source_id for source_id in self._string_list(payload.get("cited_source_ids")) if source_id in allowed_source_ids]
+        answer = str(payload.get("answer", "")).strip()
+        if answer and not cited:
+            cited = list(prior_draft.cited_source_ids) or [bounded[0].source_id]
+        if not answer:
+            return prior_draft
+        return SynthesisDraft(
+            summary=str(payload.get("summary", prior_draft.summary)).strip(),
+            answer=answer,
+            cited_source_ids=cited,
+            remaining_questions=self._string_list(payload.get("remaining_questions")),
         )
 
     def reasoning_request_options(self) -> dict[str, object]:

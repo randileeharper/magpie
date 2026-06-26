@@ -56,6 +56,7 @@ class RunTelemetry:
     sources_rejected: int = 0
     cache_hits: int = 0
     syntheses: int = 0
+    compositions: int = 0
     operation_error_recorded: bool = False
 
 
@@ -1057,11 +1058,12 @@ class ResearchService:
         limitations: list[str] | None = None, status: str = "ok",
     ) -> ResearchResult:
         self._raise_if_cancelled(run_id)
-        references = self.storage.get_source_references(draft.cited_source_ids)[: max(0, request.max_references)]
+        summary, answer, cited_source_ids = self._compose_final(run_id, request.question, draft, timings)
+        references = self.storage.get_source_references(cited_source_ids)[: max(0, request.max_references)]
         self._finalize_storage(
             run_id,
-            draft.summary,
-            draft.answer,
+            summary,
+            answer,
             references,
             "completed" if status == "ok" else "partial",
             reason,
@@ -1076,10 +1078,43 @@ class ResearchService:
         )
         self._trace(run_id, "COMPLETED", [f"status: {status}", f"stop_reason: {reason.value}"])
         return ResearchResult(
-            status, run_id, draft.summary, draft.answer, references,
+            status, run_id, summary, answer, references,
             draft.warnings + (warnings or []), draft.limitations + (limitations or []),
             reason, self._build_debug(run_id, request, timings),
         )
+
+    def _compose_final(
+        self, run_id: str, question: str, draft: SynthesisDraft, timings: dict[str, list[float]],
+    ) -> tuple[str, str, list[str]]:
+        if not draft.answer or not draft.cited_source_ids:
+            return draft.summary, draft.answer, draft.cited_source_ids
+        evidence = self.storage.get_evidence_for_run(run_id, draft.cited_source_ids)
+        if not evidence:
+            return draft.summary, draft.answer, draft.cited_source_ids
+        self._set_stage(run_id, "compose")
+        try:
+            composed, elapsed = self._call_resolver("compose", question, evidence, draft)
+        except Exception as exc:  # noqa: BLE001
+            self._record_operation_error(run_id, "resolver", "compose", exc)
+            self._trace(run_id, "COMPOSE FAILED", [f"error: {exc}"])
+            return draft.summary, draft.answer, draft.cited_source_ids
+        self._record_timing(timings, "resolver.compose", elapsed)
+        telemetry = self._get_telemetry(run_id)
+        if telemetry:
+            telemetry.compositions += 1
+        self._emit_run_event(
+            run_id,
+            "research.compose.completed",
+            {
+                "run_id": run_id,
+                "evidence_count": len(evidence),
+                "cited_source_ids": composed.cited_source_ids,
+                "summary_characters": len(composed.summary),
+                "answer_characters": len(composed.answer),
+                "duration_ms": elapsed,
+            },
+        )
+        return composed.summary, composed.answer, composed.cited_source_ids
 
     def _raise_if_cancelled(self, run_id: str) -> None:
         if self.storage.is_cancel_requested(run_id):

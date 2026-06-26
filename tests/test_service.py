@@ -167,6 +167,35 @@ class CachedThenNewResolver(FakeResolverClient):
         return SynthesisDraft("complete", "complete answer", cited, [])
 
 
+class ComposingResolver(FakeResolverClient):
+    """Tracks compose() calls and returns a richer, multi-paragraph answer."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.compose_calls = 0
+        self.compose_evidence_counts: list[int] = []
+
+    def compose(self, question, evidence, prior_draft):
+        self.compose_calls += 1
+        self.compose_evidence_counts.append(len(evidence))
+        return SynthesisDraft(
+            summary="Composed summary.",
+            answer=(
+                "First paragraph explaining the topic in depth.\n\n"
+                "Second paragraph covering key components and how it works."
+            ),
+            cited_source_ids=prior_draft.cited_source_ids,
+            remaining_questions=[],
+        )
+
+
+class FailingComposeResolver(SerialResolver):
+    """compose() raises to verify the finalize path falls back to the draft."""
+
+    def compose(self, question, evidence, prior_draft):
+        raise RuntimeError("compose exploded")
+
+
 class WeatherRoutingResolver(FakeResolverClient):
     def __init__(self, zip_code: str | None = "98230") -> None:
         super().__init__()
@@ -655,6 +684,79 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(resolver.source_counts, [1, 1])
         self.assertIsNone(resolver.prior_drafts[0])
         self.assertEqual(resolver.prior_drafts[1].answer, "partial answer")
+
+    def test_compose_pass_produces_final_answer_with_all_cited_evidence(self) -> None:
+        class TwoResultSearch(FakeSearchClient):
+            def search(self, request):
+                return [
+                    SearchResultRecord("One", "https://example.com/one", "one", provider="fake"),
+                    SearchResultRecord("Two", "https://example.com/two", "two", provider="fake"),
+                ]
+
+        class ComposingSerialResolver(SerialResolver):
+            def __init__(self):
+                super().__init__()
+                self.compose_evidence: list[str] = []
+
+            def compose(self, question, evidence, prior_draft):
+                self.compose_evidence = [item.source_id for item in evidence]
+                return SynthesisDraft(
+                    summary="Composed summary.",
+                    answer="First paragraph.\n\nSecond paragraph.",
+                    cited_source_ids=prior_draft.cited_source_ids,
+                    remaining_questions=[],
+                )
+
+        resolver = ComposingSerialResolver()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir, resolver=resolver, search_client=TwoResultSearch())
+            result = service.research(ResearchRequest(question="explain a topic"))
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.answer, "First paragraph.\n\nSecond paragraph.")
+        self.assertEqual(result.summary, "Composed summary.")
+        # compose must receive evidence from every cited source
+        self.assertEqual(len(resolver.compose_evidence), 2)
+
+    def test_compose_failure_falls_back_to_synthesis_draft(self) -> None:
+        class TwoResultSearch(FakeSearchClient):
+            def search(self, request):
+                return [
+                    SearchResultRecord("One", "https://example.com/one", "one", provider="fake"),
+                    SearchResultRecord("Two", "https://example.com/two", "two", provider="fake"),
+                ]
+
+        resolver = FailingComposeResolver()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(
+                tmpdir, resolver=resolver, search_client=TwoResultSearch(),
+                fetcher=FakeFetcher(pages={
+                    "https://example.com/one": FetchedSource(
+                        url="https://example.com/one", title="One", site_name="S",
+                        text="first answer", retrieved_via="fake",
+                    ),
+                    "https://example.com/two": FetchedSource(
+                        url="https://example.com/two", title="Two", site_name="S",
+                        text="second answer", retrieved_via="fake",
+                    ),
+                }),
+            )
+            result = service.research(ResearchRequest(question="explain a topic"))
+
+        self.assertEqual(result.status, "ok")
+        # falls back to the draft answer, not the composed one
+        self.assertEqual(result.answer, "complete answer")
+
+    def test_compose_is_skipped_when_no_evidence_or_answer(self) -> None:
+        resolver = ComposingResolver()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(
+                tmpdir, resolver=resolver, search_client=FakeSearchClient(index={}),
+            )
+            result = service.research(ResearchRequest(question="nothing"))
+
+        # no evidence gathered -> compose must not be called
+        self.assertEqual(resolver.compose_calls, 0)
 
     def test_non_answer_draft_is_discarded_and_next_source_is_checked(self) -> None:
         class WeatherSearch(FakeSearchClient):
