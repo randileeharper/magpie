@@ -76,6 +76,22 @@ def build_agent_card(base_url: str) -> AgentCard:
     )
 
 
+def _request_metadata(context: RequestContext) -> dict[str, Any]:
+    """Resolve request metadata from both request-level and message-level fields.
+
+    The A2A SDK's ``RequestContext.metadata`` reads only the request-level
+    ``SendMessageRequest.metadata`` field; clients set metadata on the message
+    (``Message.metadata``), which is a separate protobuf field. Merge both so
+    skill selection and other metadata-driven dispatch work over the transport.
+    Message-level metadata takes precedence over request-level when both set
+    the same key.
+    """
+    merged: dict[str, Any] = dict(context.metadata)
+    if context.message is not None:
+        merged.update(json_format.MessageToDict(context.message.metadata))
+    return merged
+
+
 class SDKResearchAgentExecutor(AgentExecutor):
     def __init__(self, service: ResearchService):
         self._service = service
@@ -85,7 +101,7 @@ class SDKResearchAgentExecutor(AgentExecutor):
             raise InvalidParamsError("SendMessageRequest.message is required.")
         if not context.task_id or not context.context_id:
             raise InternalError("Request context did not include task identifiers.")
-        metadata = context.metadata
+        metadata = _request_metadata(context)
         question = context.get_user_input()
         skill = metadata.get("skill", "magpie_ask")
         task = new_task(

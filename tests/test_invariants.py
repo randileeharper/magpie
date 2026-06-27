@@ -156,6 +156,47 @@ class InvariantTests(unittest.TestCase):
             "Evidence from https://example.com/question/0.",
         )
 
+    def test_a2a_message_metadata_selects_skill_over_http_transport(self) -> None:
+        # Regression for issue #50: clients set `skill` on the message
+        # (Message.metadata), but RequestContext.metadata reads the request-level
+        # SendMessageRequest.metadata field, so the skill was lost over the HTTP
+        # transport and every request fell back to magpie_ask. The executor must
+        # honor message-level metadata so the magpie_search route is reachable.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir, FakeResolverClient(), ManySearch())
+            app = build_fastapi_app(service, "http://testserver")
+            message = Message(
+                role=Role.ROLE_USER,
+                message_id="message-1",
+                parts=[new_text_part("question", media_type="text/plain")],
+                metadata={"skill": "magpie_search"},
+            )
+
+            async def send() -> dict:
+                async def inline_to_thread(function, *args, **kwargs):
+                    return function(*args, **kwargs)
+
+                with mock.patch("magpie.a2a.asyncio.to_thread", side_effect=inline_to_thread):
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+                    ) as client:
+                        response = await client.post(
+                            "/message:send",
+                            headers={"A2A-Version": "1.0"},
+                            json=MessageToDict(SendMessageRequest(
+                                message=message,
+                                configuration={"return_immediately": False},
+                            )),
+                        )
+                        self.assertEqual(response.status_code, 200)
+                        return response.json()
+
+            task = asyncio.run(send())["task"]
+        self.assertEqual(task["status"]["state"], "TASK_STATE_COMPLETED")
+        # The search route produces a "Found N results" summary; the ask route
+        # (the previous default) would produce an evidence-grounded answer.
+        self.assertEqual(task["status"]["message"]["parts"][0]["text"], "Found 5 results for: question")
+
     def test_agent_card_alias_without_json_suffix_works(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = self._service(tmpdir, FakeResolverClient(), ManySearch())
