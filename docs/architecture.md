@@ -142,10 +142,9 @@ generated prose with regex.
 ### Synthesis behavior
 
 The synthesis prompt prefers several substantive paragraphs over a single terse
-paragraph. When sources present competing complete options (for example,
-different recipes), the resolver commits to the single best one rather than
-surveying alternatives. Specialized routes (weather, anime, news) bypass
-synthesis entirely and answer directly.
+paragraph. When sources present competing complete options, the resolver commits
+to the single best one rather than surveying alternatives. Specialized routes
+(weather, anime, news) bypass synthesis entirely and answer directly.
 
 Resolver calls are serialized across concurrent runs because the expected
 deployment target is a smaller local model, not a high-throughput frontier API.

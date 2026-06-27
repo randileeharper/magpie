@@ -287,9 +287,6 @@ class OpenAICompatibleResolverClient:
             [*(prior_draft.cited_source_ids if prior_draft else []), *[item.source_id for item in bounded]]
         ))
         procedural = question.lower().strip().startswith(("how do i ", "how to ", "steps to ", "guide to "))
-        recipe = procedural and any(
-            signal in question.lower() for signal in ("recipe", "cook", "bake", "bread", "dough")
-        )
         explanatory = question.lower().strip().startswith(
             ("explain ", "what is ", "what are ", "describe ", "overview of ", "introduction to ")
         )
@@ -298,8 +295,6 @@ class OpenAICompatibleResolverClient:
             system += load_prompt("synthesize_explanatory")
         if procedural:
             system += load_prompt("synthesize_procedural")
-        if recipe:
-            system += load_prompt("synthesize_recipe")
         user = {
             "question": question,
             "prior_draft": {

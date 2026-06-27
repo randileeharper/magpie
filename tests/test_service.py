@@ -652,6 +652,74 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(resolver.calls, 2)
         self.assertIn("500g flour", result.answer)
 
+    def test_vague_procedural_answer_triggers_more_research(self) -> None:
+        class ProceduralSearch(FakeSearchClient):
+            def search(self, request):
+                return [
+                    SearchResultRecord(
+                        title="Complete setup guide",
+                        url=f"https://example.com/guide-{len(request.query)}",
+                        snippet="Complete guide",
+                        provider="fake",
+                    )
+                ]
+
+        class ProceduralFetcher(FakeFetcher):
+            def fetch(self, url):
+                return FetchedSource(
+                    url=url,
+                    title="Complete setup guide",
+                    site_name="Example",
+                    text=(
+                        "1. Install the package using apt.\n"
+                        "2. Create the configuration file at /etc/app.conf.\n"
+                        "3. Start the service with systemctl start app.\n"
+                        "4. Verify the service is running on port 8080."
+                    ),
+                    retrieved_via="fake",
+                    source_kind=SourceKind.PAGE_FETCH,
+                )
+
+        class VagueThenUsefulProceduralResolver(FakeResolverClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls = 0
+
+            def synthesize(self, question, evidence, prior_draft=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return SynthesisDraft(
+                        summary="General setup steps.",
+                        answer="Install it, configure it, and start it.",
+                        cited_source_ids=[evidence[0].source_id],
+                        remaining_questions=[],
+                    )
+                return SynthesisDraft(
+                    summary="A complete setup guide.",
+                    answer=(
+                        "1. Install the package using apt.\n"
+                        "2. Create the configuration file at /etc/app.conf.\n"
+                        "3. Start the service with systemctl start app.\n"
+                        "4. Verify the service is running on port 8080."
+                    ),
+                    cited_source_ids=[item.source_id for item in evidence],
+                    remaining_questions=[],
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            resolver = VagueThenUsefulProceduralResolver()
+            service = self._service(
+                tmpdir,
+                resolver=resolver,
+                search_client=ProceduralSearch(),
+                fetcher=ProceduralFetcher(),
+            )
+            result = service.research(ResearchRequest(question="how do i set up the app"))
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(resolver.calls, 2)
+        self.assertIn("systemctl start app", result.answer)
+
     def test_synthesis_receives_all_evidence_per_round_with_prior_draft(self) -> None:
         class TwoResultSearch(FakeSearchClient):
             def search(self, request):

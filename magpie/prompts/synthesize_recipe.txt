@@ -1,1 +1,0 @@
- This is a recipe request. The answer must include a complete ingredient list with quantities, ordered instructions, fermentation or cooking times, and temperatures. Choose one coherent recipe rather than blending incompatible recipes. If the evidence does not support all of those details, set remaining_questions accordingly.

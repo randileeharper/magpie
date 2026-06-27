@@ -28,17 +28,23 @@ from .routes import try_specialized_route
 
 RECENT_SIGNALS = {"latest", "current", "today", "yesterday", "this week", "this month", "this year"}
 PROCEDURAL_SIGNALS = ("how do i ", "how to ", "steps to ", "guide to ")
-RECIPE_SIGNALS = ("recipe", "cook", "bake", "bread", "dough")
 ACTIONABLE_SECTION_SIGNALS = (
-    "ingredient", "instruction", "method", "step", "directions", "preparation",
-    "how to make", "recipe", "bake", "mix", "fold", "proof", "ferment",
+    "instruction", "method", "step", "directions", "preparation", "procedure",
+    "how to", "process",
 )
 IMPERATIVE_SIGNALS = (
-    "add ", "bake ", "combine ", "cover ", "fold ", "heat ", "knead ", "mix ",
-    "place ", "preheat ", "rest ", "shape ", "stir ", "transfer ",
+    "add ", "combine ", "connect ", "cover ", "create ", "enter ", "install ", "mix ",
+    "place ", "press ", "remove ", "run ", "set ", "turn ", "type ", "wait ",
 )
-_QUANTITY_PATTERN = re.compile(
-    r"\b\d+(?:\.\d+)?\s*(?:g|kg|ml|cup|cups|tsp|tbsp|minutes?|mins?|hours?|hrs?|°f|°c)\b"
+# Matches any measurement a procedural answer might cite, not only cooking ones.
+_MEASUREMENT_PATTERN = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:"
+    r"g|kg|mg|ml|l|cup|cups|tsp|tbsp|oz|lb|"
+    r"minutes?|mins?|seconds?|secs?|hours?|hrs?|days?|"
+    r"°f|°c|"
+    r"px|pt|em|rem|"
+    r"mb|gb|tb|kb"
+    r")\b"
 )
 _GLOBAL_RESOLVER_GATE = threading.BoundedSemaphore(1)
 _FETCH_LOG_LOCK = threading.Lock()
@@ -827,7 +833,7 @@ class ResearchService:
             if procedural:
                 score += sum(3 for signal in ACTIONABLE_SECTION_SIGNALS if signal in lowered)
                 score += sum(2 for signal in IMPERATIVE_SIGNALS if signal in lowered)
-                score += min(4, len(_QUANTITY_PATTERN.findall(lowered)))
+                score += min(4, len(_MEASUREMENT_PATTERN.findall(lowered)))
             link_count = chunk.count("](")
             if link_count >= 4:
                 score -= 20
@@ -858,10 +864,6 @@ class ResearchService:
         imperative_count = sum(1 for signal in IMPERATIVE_SIGNALS if signal in lowered)
         if step_count < 3 and imperative_count < 3:
             return "Find enough evidence to provide a concrete, ordered set of instructions."
-        if any(signal in question.lower() for signal in RECIPE_SIGNALS):
-            quantities = _QUANTITY_PATTERN.findall(lowered)
-            if len(quantities) < 4:
-                return "Find a complete recipe with ingredient quantities, timings, and baking temperature."
         return None
 
     def _remaining_questions_after_quality(
