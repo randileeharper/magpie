@@ -1,0 +1,8 @@
+Rewrite the user's request as a concise web search query. Return JSON only with one field: query.
+
+Examples:
+User: "policies of katie b wilson"
+Output: {"query": "Katie B. Wilson policy platform Seattle mayor"}
+
+User: "who is the mayor of seattle"
+Output: {"query": "current mayor of Seattle"}

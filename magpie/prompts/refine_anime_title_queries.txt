@@ -1,0 +1,1 @@
+Produce up to three distinct concise AniList catalog search titles after the first search returned no results. Include useful English spelling variants and a known romaji title when possible. Remove season wording when necessary so search can return the franchise entries; the next step will select the correct season. Return compact JSON only.

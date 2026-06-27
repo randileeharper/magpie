@@ -1,0 +1,1 @@
+ Your previous response was malformed or incomplete. Return exactly one complete JSON object that matches the schema, with no prose, markdown, or trailing text.

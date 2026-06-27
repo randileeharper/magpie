@@ -34,6 +34,7 @@ from ..models import (
 )
 from ..text import valid_unicode, valid_unicode_tree
 from .base import reasoning_request_options
+from ..prompts.loader import load_prompt
 
 _DEBUG_LOG_LOCK = threading.Lock()
 LOGGER = logging.getLogger(__name__)
@@ -50,15 +51,7 @@ class OpenAICompatibleResolverClient:
     def route_request(self, question: str) -> RouteDecision:
         payload = self._ask_json(
             "route_request",
-            system=(
-                "Classify the request for an information-retrieval agent. Return compact JSON only. "
-                "Use route=weather only for requests asking about weather conditions or a weather forecast. "
-                "Use route=anime for requests about anime titles, anime schedules, characters, or voice actors. "
-                "Use route=news only for broad news category requests such as world news, AI news, politics news, or news today. "
-                "For weather, extract or infer the primary five-digit US ZIP code when confident; otherwise use null. "
-                "Use weather_kind=conditions for current/outside/right-now requests and forecast for future outlooks. "
-                "For anime, news, and web_research, weather_kind and zip_code must be null."
-            ),
+            system=load_prompt("route_request"),
             user={"question": question},
             schema_name="magpie_route_request",
             schema={
@@ -90,13 +83,7 @@ class OpenAICompatibleResolverClient:
     def classify_anime_request(self, question: str) -> AnimeRequest:
         payload = self._ask_json(
             "classify_anime_request",
-            system=(
-                "Classify an anime information request. Return compact JSON only. "
-                "Use lookup for factual questions about a specific anime, credits for character or voice-actor "
-                "questions, and schedule for daily episode airing schedules. For lookup, select only fields needed to "
-                "answer the question. Extract the anime title and character fragment when applicable. "
-                "Use null or an empty list when not applicable."
-            ),
+            system=load_prompt("classify_anime_request"),
             user={"question": question},
             schema_name="magpie_anime_request",
             schema={
@@ -143,14 +130,7 @@ class OpenAICompatibleResolverClient:
     def classify_news_request(self, question: str) -> NewsRequest:
         payload = self._ask_json(
             "classify_news_request",
-            system=(
-                "Classify a broad news request. Return compact JSON only. "
-                "Use kind=category only for broad news categories like general, world, us, politics, business, "
-                "technology, ai, science, health, entertainment, or sports. "
-                "Use kind=unsupported_topic for named entities, specific companies, arbitrary topics, or specific stories. "
-                "Default latest or unspecified time windows to last_24_hours. "
-                "Map today to today, yesterday to yesterday, and this week to last_7_days."
-            ),
+            system=load_prompt("classify_news_request"),
             user={"question": question},
             schema_name="magpie_news_request",
             schema={
@@ -192,12 +172,7 @@ class OpenAICompatibleResolverClient:
     def refine_anime_title_queries(self, question: str, attempted_query: str) -> list[str]:
         payload = self._ask_json(
             "refine_anime_title_queries",
-            system=(
-                "Produce up to three distinct concise AniList catalog search titles after the first search returned no "
-                "results. Include useful English spelling variants and a known romaji title when possible. "
-                "Remove season wording when necessary so search can return the franchise entries; the next step will "
-                "select the correct season. Return compact JSON only."
-            ),
+            system=load_prompt("refine_anime_title_queries"),
             user={"question": question, "attempted_query": attempted_query},
             schema_name="magpie_anime_title_queries",
             schema={
@@ -223,10 +198,7 @@ class OpenAICompatibleResolverClient:
             return None
         payload = self._ask_json(
             "select_anime_candidate",
-            system=(
-                "Select the anime candidate that best matches the request. Compare English, romaji, and native titles. "
-                "Return null only when none plausibly match. Return compact JSON only."
-            ),
+            system=load_prompt("select_anime_candidate"),
             user={"question": question, "candidates": [
                 {
                     "anime_id": item.anime_id,
@@ -255,10 +227,7 @@ class OpenAICompatibleResolverClient:
             return None
         payload = self._ask_json(
             "select_anime_character",
-            system=(
-                "Select the character whose full name best matches the user's partial character name. "
-                "Return null when none plausibly match. Return compact JSON only."
-            ),
+            system=load_prompt("select_character"),
             user={"character_query": query, "characters": [item.character_name for item in credits]},
             schema_name="magpie_anime_character",
             schema={
@@ -275,15 +244,7 @@ class OpenAICompatibleResolverClient:
     def propose_query(self, question: str, context: PlanningContext) -> QueryProposal:
         payload = self._ask_json(
             "propose_query",
-            system=(
-                "Rewrite the user's request as a concise web search query. "
-                "Return JSON only with one field: query.\n\n"
-                "Examples:\n"
-                'User: "policies of katie b wilson"\n'
-                'Output: {"query": "Katie B. Wilson policy platform Seattle mayor"}\n\n'
-                'User: "who is the mayor of seattle"\n'
-                'Output: {"query": "current mayor of Seattle"}'
-            ),
+            system=load_prompt("propose_query"),
             user={
                 "question": question,
                 "prior_queries": context.prior_queries,
@@ -332,42 +293,13 @@ class OpenAICompatibleResolverClient:
         explanatory = question.lower().strip().startswith(
             ("explain ", "what is ", "what are ", "describe ", "overview of ", "introduction to ")
         )
-        system = (
-            "Answer the question using all provided sources. Return compact JSON only. "
-            "Write a thorough, self-contained answer in plain English markdown with real newline characters. "
-            "If a prior draft is provided, fold in its useful facts and improve the answer. "
-            "Do not invent facts or source ids. "
-            "Use only allowed_source_ids in cited_source_ids; set cited_source_ids to the subset whose facts you used. "
-            "Put unanswered needs in remaining_questions. "
-            "Set remaining_questions to [] only when the answer is directly usable and complete. "
-            "Set source_answers_question=false if the sources collectively do not contribute enough facts to answer the question. "
-            "When false, return an empty answer, empty cited_source_ids, and put the missing information in remaining_questions. "
-            "When sources present different complete approaches (a different recipe, method, or full explanation of the "
-            "same thing), choose the single best one by completeness and clarity, commit to it, and write that. "
-            "Do not survey what most sources say. Do not enumerate alternatives or present multiple options unless the "
-            "user explicitly asked for a comparison. "
-            "Do not put citations, source ids, or an Additional Resources section in the answer text. "
-            "Do not mix languages, transliterations, or stray non-English text unless the source explicitly requires it. "
-            "Do not include decorative bolded step titles unless they improve clarity."
-        )
+        system = load_prompt("synthesize")
         if explanatory:
-            system += (
-                " This is an explanatory request. Write a short essay using the provided sources, "
-                "not a brief answer. If the sources cover only part of the topic, list the missing "
-                "facets in remaining_questions so further sources can be gathered."
-            )
+            system += load_prompt("synthesize_explanatory")
         if procedural:
-            system += (
-                " This is a procedural request. Return one coherent, directly usable method with an ordered list of concrete steps. "
-                "Each step must be actionable and written as a normal sentence, not a label fragment. "
-                "Avoid nested lists unless a source clearly requires them. If evidence lacks details needed to perform a step, put that need in remaining_questions."
-            )
+            system += load_prompt("synthesize_procedural")
         if recipe:
-            system += (
-                " This is a recipe request. The answer must include a complete ingredient list with quantities, ordered instructions, "
-                "fermentation or cooking times, and temperatures. Choose one coherent recipe rather than blending incompatible recipes. "
-                "If the evidence does not support all of those details, set remaining_questions accordingly."
-            )
+            system += load_prompt("synthesize_recipe")
         user = {
             "question": question,
             "prior_draft": {
@@ -421,8 +353,7 @@ class OpenAICompatibleResolverClient:
                 "synthesize_retry",
                 system=(
                     system
-                    + " Do not include any transport or control markers inside string values. "
-                    + "Never emit tokens like <channel|>, <|tool_response>, ```json, or stray braces inside the answer text."
+                    + load_prompt("synthesize_retry")
                 ),
                 user=user,
                 schema_name="magpie_synthesis_retry",
@@ -492,11 +423,7 @@ class OpenAICompatibleResolverClient:
             attempt_step = step if attempt == 0 else f"{step}_json_retry"
             system_prompt = system
             if attempt == 1:
-                system_prompt += (
-                    " Your previous response was malformed or incomplete. "
-                    "Return exactly one complete JSON object that matches the schema, with no prose, markdown, "
-                    "or trailing text."
-                )
+                system_prompt += load_prompt("json_retry")
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},

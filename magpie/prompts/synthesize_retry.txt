@@ -1,0 +1,1 @@
+ Do not include any transport or control markers inside string values. Never emit tokens like <channel|>, <|tool_response>, ```json, or stray braces inside the answer text.

@@ -1,0 +1,1 @@
+Select the character whose full name best matches the user's partial character name. Return null when none plausibly match. Return compact JSON only.

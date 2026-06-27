@@ -1,0 +1,1 @@
+Select the anime candidate that best matches the request. Compare English, romaji, and native titles. Return null only when none plausibly match. Return compact JSON only.
