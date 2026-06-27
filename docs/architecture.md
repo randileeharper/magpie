@@ -190,3 +190,18 @@ through A2A task cancellation; the service checks `is_cancel_requested` between
 stages and raises `ResearchCancelled`, which marks the run cancelled and emits a
 `research.run.canceled` event. A2A task IDs are also durable Magpie run IDs, so
 task cancellation targets the same run recorded in SQLite.
+
+## Run Ownership Across Entry Points
+
+`research`, `search`, and `fetch` all create `research_runs` rows, but only one
+entry point owns a given run's terminal transition:
+
+- `research` — creates and finalizes the run (completed/partial/failed).
+- `search` — creates and finalizes the run (completed/failed).
+- `fetch` by URL — creates and finalizes the run, ending with
+  `completed` + `needed_new_search` on success or `failed` on a fetch error,
+  and emits `research.run.started` / `research.run.completed` /
+  `research.run.failed`.
+- `fetch` by index — reuses an existing search run (`run_id` + `index`) and
+  does **not** transition that run's status; the owning `search`/`research`
+  call is responsible for its terminal.

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
+from jsonschema import Draft202012Validator
+
 from magpie.config import Settings
-from magpie.errors import FetchError, SearchError
+from magpie.errors import FetchError, ResolverError, SearchError
+from magpie.historian import FakeHistorianSink
 from magpie.models import (
     AnimeCandidate,
     AnimeField,
@@ -38,6 +42,26 @@ from magpie.providers.fake import FakeFetcher, FakeResolverClient, FakeSearchCli
 from magpie.a2a import build_fastapi_app, build_sdk_server
 from magpie.service import ResearchService, detect_freshness_class
 from magpie.storage import SQLiteStorage
+
+
+def _manifest_schemas() -> dict[tuple[str, int], dict]:
+    manifest = json.loads(
+        (Path(__file__).parents[1] / "historian.manifest.json").read_text(encoding="utf-8")
+    )
+    return {
+        (item["event_type"], item["version"]): item["json_schema"]
+        for item in manifest["schemas"]
+    }
+
+
+def _validate_manifest_events(events: list[dict]) -> None:
+    schemas = _manifest_schemas()
+    for event in events:
+        if str(event["type"]).startswith("core."):
+            continue
+        Draft202012Validator(schemas[(event["type"], event["schemaversion"])]).validate(
+            event["data"]
+        )
 
 
 class RogueResolver(FakeResolverClient):
@@ -301,7 +325,7 @@ class FakeNewsClient:
 class ServiceTests(unittest.TestCase):
     def _service(
         self, tmpdir: str, resolver=None, search_client=None, fetcher=None, weather_client=None,
-        anime_client=None, news_client=None,
+        anime_client=None, news_client=None, historian_sink=None,
     ) -> ResearchService:
         storage = SQLiteStorage(Path(tmpdir) / "magpie.db")
         storage.initialize()
@@ -315,6 +339,7 @@ class ServiceTests(unittest.TestCase):
             weather_client=weather_client,
             anime_client=anime_client,
             news_client=news_client,
+            historian_sink=historian_sink,
         )
 
     def test_anime_credit_route_returns_only_selected_credit(self) -> None:
@@ -1099,6 +1124,81 @@ class ServiceTests(unittest.TestCase):
             self.assertNotEqual(result.stop_reason, StopReason.INTERNAL_ERROR)
             run = service.storage.get_run(result.run_id)
             self.assertNotEqual(run["stop_reason"], StopReason.INTERNAL_ERROR.value)
+            service.storage.close()
+
+    def test_fetch_by_url_finalizes_run_as_completed(self) -> None:
+        sink = FakeHistorianSink()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir, historian_sink=sink)
+            result = service.fetch(url="https://example.com/mayor-election")
+            try:
+                run = service.storage.get_run(result.run_id)
+                self.assertEqual(run["status"], "completed")
+                self.assertEqual(run["stop_reason"], StopReason.NEEDED_NEW_SEARCH.value)
+                event_types = [event["type"] for event in sink.events]
+                self.assertEqual(event_types.count("research.run.started"), 1)
+                self.assertEqual(event_types.count("research.run.completed"), 1)
+                self.assertNotIn("research.run.failed", event_types)
+                completed = next(
+                    event for event in sink.events if event["type"] == "research.run.completed"
+                )
+                self.assertEqual(completed["data"]["status"], "ok")
+                self.assertEqual(
+                    completed["data"]["stop_reason"], StopReason.NEEDED_NEW_SEARCH.value
+                )
+                _validate_manifest_events(sink.events)
+            finally:
+                service.storage.close()
+
+    def test_fetch_by_url_failure_finalizes_run_as_failed(self) -> None:
+        class FailingFetcher(FakeFetcher):
+            def fetch(self, url: str):
+                raise FetchError(f"boom for {url}")
+
+        sink = FakeHistorianSink()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir, fetcher=FailingFetcher(), historian_sink=sink)
+            with self.assertRaises(ResolverError):
+                service.fetch(url="https://example.com/mayor-election")
+            try:
+                with service.storage._connect() as connection:
+                    running = connection.execute(
+                        "SELECT run_id FROM research_runs WHERE status='running'"
+                    ).fetchall()
+                    failed_rows = connection.execute(
+                        "SELECT run_id, status, stop_reason FROM research_runs WHERE status='failed'"
+                    ).fetchall()
+                self.assertEqual(running, [])
+                self.assertEqual(len(failed_rows), 1)
+                self.assertEqual(failed_rows[0]["stop_reason"], StopReason.FAILED.value)
+                event_types = [event["type"] for event in sink.events]
+                self.assertEqual(event_types.count("research.run.started"), 1)
+                self.assertEqual(event_types.count("research.run.failed"), 1)
+                self.assertNotIn("research.run.completed", event_types)
+                failed = next(
+                    event for event in sink.events if event["type"] == "research.run.failed"
+                )
+                self.assertEqual(failed["data"]["status"], "error")
+                self.assertEqual(failed["data"]["stop_reason"], StopReason.FAILED.value)
+                self.assertEqual(failed["data"]["error_type"], "FetchError")
+                _validate_manifest_events(sink.events)
+            finally:
+                service.storage.close()
+
+    def test_fetch_by_index_does_not_finalize_owning_search_run(self) -> None:
+        # fetch() reuses an existing search run when given run_id + index, and
+        # must not transition that run's status (the search owns its terminal).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            search = service.search("mayor of New York")
+            self.assertEqual(service.storage.get_run(search.run_id)["status"], "completed")
+            # Index fetch against the completed search run returns stored content
+            # without rewriting the run's terminal status.
+            result = service.fetch(run_id=search.run_id, index=0)
+            self.assertEqual(result.run_id, search.run_id)
+            run = service.storage.get_run(search.run_id)
+            self.assertEqual(run["status"], "completed")
+            self.assertEqual(run["stop_reason"], StopReason.NEEDED_NEW_SEARCH.value)
             service.storage.close()
 
 

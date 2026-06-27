@@ -717,15 +717,20 @@ class ResearchService:
                 raise ResolverError(f"No source found at index {index} for run {run_id}.")
         if not url:
             raise ResolverError("fetch requires either (run_id + index) or url.")
+        owns_run = run_id is None
         fetch_run_id = run_id or str(uuid.uuid4())
-        if not run_id:
+        timings: dict[str, list[float]] = {}
+        if owns_run:
             freshness = detect_freshness_class(url)
             self.storage.create_run(url, None, freshness, ResponseDetail.COMPACT.value, run_id=fetch_run_id)
             self._begin_logs(fetch_run_id, url)
+            self._start_run(fetch_run_id, url, None, freshness, ResponseDetail.COMPACT)
+            self._select_route(fetch_run_id, RequestRoute.WEB_RESEARCH.value)
         started = perf_counter()
         try:
             fetched = self.fetcher.fetch(url)
             elapsed = round((perf_counter() - started) * 1000, 2)
+            self._record_timing(timings, "fetch", elapsed)
             source_id = self.storage.upsert_source(
                 fetch_run_id, fetched.url, fetched.title, fetched.site_name, fetched.published_at, fetched.text,
                 {"metadata": fetched.metadata, "markdown": fetched.markdown, "raw_html": fetched.raw_html,
@@ -733,6 +738,14 @@ class ResearchService:
                 fetched.source_kind, None, fetched.fetch_error,
             )
             content = fetched.markdown or fetched.text
+            if owns_run:
+                self.storage.update_run_status(
+                    fetch_run_id, "completed", StopReason.NEEDED_NEW_SEARCH.value
+                )
+                self._record_run_finished(
+                    fetch_run_id, "research.run.completed", "ok",
+                    StopReason.NEEDED_NEW_SEARCH, timings, reference_ids=[source_id],
+                )
             self._trace(fetch_run_id, "FETCH COMPLETED", [
                 f"url: {url}", f"source_id: {source_id}", f"characters: {len(content)}", f"elapsed_ms: {elapsed}",
             ])
@@ -741,7 +754,52 @@ class ResearchService:
                 title=fetched.title, content=content, fetched_via="crawl4ai", warnings=warnings,
             )
         except FetchError as exc:
+            if owns_run:
+                self._finalize_fetch_failure(fetch_run_id, exc, timings)
             raise ResolverError(f"Failed to fetch {url}: {exc}") from exc
+        finally:
+            if owns_run:
+                with self._telemetry_lock:
+                    self._telemetry.pop(fetch_run_id, None)
+
+    def _start_run(
+        self, run_id: str, question: str, run_label: str | None,
+        freshness: FreshnessClass, response_detail: ResponseDetail,
+    ) -> None:
+        """Emit the run-started event and register run telemetry.
+
+        Used by ``fetch`` (and available to other owned-run entry points) so a
+        run has a ``research.run.started`` event and telemetry backing its
+        terminal events. Called after the run row already exists in storage.
+        """
+        self.storage.append_event(run_id, "run_started", {"freshness_class": freshness.value})
+        started_event_id = self._emit(
+            "research.run.started",
+            {
+                "run_id": run_id,
+                "question": question,
+                "run_label": run_label,
+                "freshness_class": freshness.value,
+                "response_detail": response_detail.value,
+            },
+            subject=run_id,
+            correlation_id=run_id,
+        )
+        with self._telemetry_lock:
+            self._telemetry[run_id] = RunTelemetry(
+                run_id, perf_counter(), started_event_id, freshness
+            )
+
+    def _finalize_fetch_failure(
+        self, run_id: str, exc: BaseException, timings: dict[str, list[float]],
+    ) -> None:
+        """Mark a fetch-owned run failed and emit the ``research.run.failed`` terminal."""
+        self.storage.update_run_status(run_id, "failed", StopReason.FAILED.value)
+        self.storage.append_event(run_id, "run_failed", {"error": str(exc)})
+        self._record_run_finished(
+            run_id, "research.run.failed", "error", StopReason.FAILED, timings,
+            error_type=exc.__class__.__name__, error_message=str(exc),
+        )
 
     def _fetch_stored_index(self, run_id: str, index: int) -> FetchResult | None:
         with self.storage._connect() as connection:
