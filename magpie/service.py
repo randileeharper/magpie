@@ -458,22 +458,23 @@ class ResearchService:
                 seen_urls.update(self.storage.get_canonical_urls(cached_ids))
                 for reference in self.storage.get_source_references(cached_ids):
                     self._record_cache_hit(run_id, reference, "exact_query")
-                cached_evidence = self._evidence_from_sources(
-                    run_id, cached_ids, request.question, budget, "Reused from exact-query cache"
-                )
-                if cached_evidence:
-                    evidence.extend(cached_evidence)
-                    last_draft = self._synthesize(run_id, request.question, cached_evidence, last_draft, timings)
-                    remaining_questions = self._remaining_questions_after_quality(
-                        request.question, last_draft, limitations
+                with self.storage.transaction():
+                    cached_evidence = self._evidence_from_sources(
+                        run_id, cached_ids, request.question, budget, "Reused from exact-query cache"
                     )
-                    if not last_draft.source_answers_question:
-                        for item in cached_evidence:
-                            self.storage.reject_source_for_query(normalize_query(request.question), item.source_id)
-                            self._record_source_rejected(
-                                run_id, item.source_id, normalize_query(request.question),
-                                "source_did_not_answer_question",
-                            )
+                    if cached_evidence:
+                        evidence.extend(cached_evidence)
+                        last_draft = self._synthesize(run_id, request.question, cached_evidence, last_draft, timings)
+                        remaining_questions = self._remaining_questions_after_quality(
+                            request.question, last_draft, limitations
+                        )
+                        if not last_draft.source_answers_question:
+                            for item in cached_evidence:
+                                self.storage.reject_source_for_query(normalize_query(request.question), item.source_id)
+                                self._record_source_rejected(
+                                    run_id, item.source_id, normalize_query(request.question),
+                                    "source_did_not_answer_question",
+                                )
                     if not remaining_questions:
                         return self._finalize(run_id, request, last_draft, StopReason.ANSWERED_FROM_CACHE, timings)
 
@@ -491,71 +492,73 @@ class ResearchService:
                         run_id, request, last_draft, warnings, limitations, StopReason.NO_PROGRESS, timings
                     )
                 budget.queries_remaining -= 1
-                query_id = self.storage.add_query(
-                    run_id, query, self.settings.search_provider, freshness
-                )
                 self._set_stage(run_id, "search")
                 results, elapsed = self._search(run_id, proposal.query, freshness)
+                self._raise_if_cancelled(run_id)
                 self._trace(run_id, "SEARCH RESULTS", [f"query: {proposal.query}", f"result_count: {len(results)}"])
                 self._record_timing(timings, "search", elapsed)
-                result_ids = self.storage.add_search_results(query_id, [to_jsonable(result) for result in results])
-                self._record_query_executed(run_id, query_id, query, freshness, len(results), elapsed)
-                candidates: list[SearchResultRecord] = []
-                for result in results:
-                    canonical = canonicalize_url(result.url)
-                    if canonical not in seen_urls:
-                        seen_urls.add(canonical)
-                        candidates.append(result)
-                        self._record_source_discovered(
-                            run_id, result_ids.get(result.url), result, canonical
-                        )
-                    if len(candidates) >= min(
-                        self.settings.max_sources_per_query, budget.sources_remaining
-                    ):
-                        break
-                if not candidates:
-                    limitations.append(f"No new sources found for query: {proposal.query}")
-                    continue
+                with self.storage.transaction():
+                    query_id = self.storage.add_query(
+                        run_id, query, self.settings.search_provider, freshness
+                    )
+                    result_ids = self.storage.add_search_results(query_id, [to_jsonable(result) for result in results])
+                    self._record_query_executed(run_id, query_id, query, freshness, len(results), elapsed)
+                    candidates: list[SearchResultRecord] = []
+                    for result in results:
+                        canonical = canonicalize_url(result.url)
+                        if canonical not in seen_urls:
+                            seen_urls.add(canonical)
+                            candidates.append(result)
+                            self._record_source_discovered(
+                                run_id, result_ids.get(result.url), result, canonical
+                            )
+                        if len(candidates) >= min(
+                            self.settings.max_sources_per_query, budget.sources_remaining
+                        ):
+                            break
+                    if not candidates:
+                        limitations.append(f"No new sources found for query: {proposal.query}")
+                        continue
 
-                round_evidence: list[EvidenceItem] = []
-                for result in candidates:
-                    if budget.evidence_remaining <= 0:
-                        break
-                    self._raise_if_cancelled(run_id)
-                    budget.sources_remaining -= 1
-                    source_id, text, new_warnings, new_limitations, elapsed = self._acquire(
-                        run_id, result, result_ids.get(result.url), freshness
-                    )
-                    self._record_timing(timings, "fetch", elapsed)
-                    warnings.extend(new_warnings)
-                    limitations.extend(new_limitations)
-                    item = self._select_evidence(
-                        run_id, source_id, text, request.question, remaining_questions, budget, [],
-                    )
-                    if item:
-                        round_evidence.append(item)
-                        self._trace(run_id, "EVIDENCE SELECTED", [
-                            f"source_id: {item.source_id}",
-                            f"source_characters: {len(item.excerpt)}",
-                        ])
-                if not round_evidence:
-                    continue
-                evidence.extend(round_evidence)
-                last_draft = self._synthesize(run_id, request.question, round_evidence, last_draft, timings)
-                if not last_draft.source_answers_question:
-                    for item in round_evidence:
-                        self.storage.reject_source_for_query(query, item.source_id)
-                        self._record_source_rejected(
-                            run_id, item.source_id, query, "source_did_not_answer_question"
+                    round_evidence: list[EvidenceItem] = []
+                    for result in candidates:
+                        if budget.evidence_remaining <= 0:
+                            break
+                        self._raise_if_cancelled(run_id)
+                        budget.sources_remaining -= 1
+                        source_id, text, new_warnings, new_limitations, elapsed = self._acquire(
+                            run_id, result, result_ids.get(result.url), freshness
                         )
-                remaining_questions = self._remaining_questions_after_quality(
-                    request.question, last_draft, limitations
-                )
-                if not remaining_questions:
-                    return self._finalize(
-                        run_id, request, last_draft, StopReason.NEEDED_NEW_SEARCH,
-                        timings, warnings, limitations,
+                        self._record_timing(timings, "fetch", elapsed)
+                        warnings.extend(new_warnings)
+                        limitations.extend(new_limitations)
+                        item = self._select_evidence(
+                            run_id, source_id, text, request.question, remaining_questions, budget, [],
+                        )
+                        if item:
+                            round_evidence.append(item)
+                            self._trace(run_id, "EVIDENCE SELECTED", [
+                                f"source_id: {item.source_id}",
+                                f"source_characters: {len(item.excerpt)}",
+                            ])
+                    if not round_evidence:
+                        continue
+                    evidence.extend(round_evidence)
+                    last_draft = self._synthesize(run_id, request.question, round_evidence, last_draft, timings)
+                    if not last_draft.source_answers_question:
+                        for item in round_evidence:
+                            self.storage.reject_source_for_query(query, item.source_id)
+                            self._record_source_rejected(
+                                run_id, item.source_id, query, "source_did_not_answer_question"
+                            )
+                    remaining_questions = self._remaining_questions_after_quality(
+                        request.question, last_draft, limitations
                     )
+                    if not remaining_questions:
+                        return self._finalize(
+                            run_id, request, last_draft, StopReason.NEEDED_NEW_SEARCH,
+                            timings, warnings, limitations,
+                        )
 
             return self._finish_incomplete(
                 run_id, request, last_draft, warnings, limitations, StopReason.BUDGET_EXHAUSTED, timings
@@ -610,41 +613,42 @@ class ResearchService:
             proposal, elapsed = self._call_resolver("propose_query", query, context)
             self._record_timing(timings, "resolver.propose_query", elapsed)
             normalized = normalize_query(proposal.query)
-            query_id = self.storage.add_query(run_id, normalized, self.settings.search_provider, freshness)
             self._set_stage(run_id, "search")
             results, elapsed = self._search(run_id, proposal.query, freshness)
             self._record_timing(timings, "search", elapsed)
-            result_ids = self.storage.add_search_results(query_id, [to_jsonable(r) for r in results])
-            seen_urls: set[str] = set()
-            items: list[IndexedSearchResultItem] = []
-            for result in results[:max_results]:
-                canonical = canonicalize_url(result.url)
-                if canonical in seen_urls:
-                    continue
-                seen_urls.add(canonical)
-                self._record_source_discovered(run_id, result_ids.get(result.url), result, canonical)
-                content = result.inline_text or "\n".join(result.highlights) or result.snippet
-                if not content.strip():
-                    warnings.append(f"No content extracted for {result.url}")
-                    continue
-                budget.sources_remaining -= 1
-                source_id = self.storage.upsert_source(
-                    run_id, result.url, result.title, result.site_name, result.published_at, content,
-                    {"provider_result": result.raw_result, "provider": result.provider},
-                    SourceKind.SEARCH_RESULT_FALLBACK, result_ids.get(result.url), None,
-                )
-                summary = result.snippet or content[:500]
-                items.append(IndexedSearchResultItem(
-                    index=len(items),
-                    title=result.title,
-                    url=result.url,
-                    site_name=result.site_name,
-                    published_at=result.published_at,
-                    summary=summary,
-                ))
-            self.storage.update_run_status(run_id, "completed", StopReason.NEEDED_NEW_SEARCH.value)
-            self._trace(run_id, "SEARCH COMPLETED", [f"result_count: {len(items)}"])
-            return IndexedSearchResult(run_id=run_id, query=proposal.query, results=items, warnings=warnings)
+            with self.storage.transaction():
+                query_id = self.storage.add_query(run_id, normalized, self.settings.search_provider, freshness)
+                result_ids = self.storage.add_search_results(query_id, [to_jsonable(r) for r in results])
+                seen_urls: set[str] = set()
+                items: list[IndexedSearchResultItem] = []
+                for result in results[:max_results]:
+                    canonical = canonicalize_url(result.url)
+                    if canonical in seen_urls:
+                        continue
+                    seen_urls.add(canonical)
+                    self._record_source_discovered(run_id, result_ids.get(result.url), result, canonical)
+                    content = result.inline_text or "\n".join(result.highlights) or result.snippet
+                    if not content.strip():
+                        warnings.append(f"No content extracted for {result.url}")
+                        continue
+                    budget.sources_remaining -= 1
+                    source_id = self.storage.upsert_source(
+                        run_id, result.url, result.title, result.site_name, result.published_at, content,
+                        {"provider_result": result.raw_result, "provider": result.provider},
+                        SourceKind.SEARCH_RESULT_FALLBACK, result_ids.get(result.url), None,
+                    )
+                    summary = result.snippet or content[:500]
+                    items.append(IndexedSearchResultItem(
+                        index=len(items),
+                        title=result.title,
+                        url=result.url,
+                        site_name=result.site_name,
+                        published_at=result.published_at,
+                        summary=summary,
+                    ))
+                self.storage.update_run_status(run_id, "completed", StopReason.NEEDED_NEW_SEARCH.value)
+                self._trace(run_id, "SEARCH COMPLETED", [f"result_count: {len(items)}"])
+                return IndexedSearchResult(run_id=run_id, query=proposal.query, results=items, warnings=warnings)
         except Exception as exc:  # noqa: BLE001
             self.storage.update_run_status(run_id, "failed", StopReason.FAILED.value)
             self.storage.append_event(run_id, "run_failed", {"error": str(exc)})

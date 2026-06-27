@@ -181,6 +181,52 @@ class StorageTests(unittest.TestCase):
             )
         self.assertEqual(cached, [source_id])
 
+    def test_transaction_commits_on_clean_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = SQLiteStorage(Path(tmpdir) / "magpie.db")
+            storage.initialize()
+            run_id = storage.create_run("q", None, FreshnessClass.EVERGREEN, "compact")
+
+            with storage.transaction():
+                query_id = storage.add_query(run_id, "q", "fake", FreshnessClass.EVERGREEN)
+                storage.add_search_results(query_id, [{"title": "T", "url": "https://example.com/a", "snippet": "s"}])
+
+            queries = storage.list_queries_for_run(run_id)
+        self.assertEqual(queries, ["q"])
+
+    def test_transaction_rolls_back_on_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = SQLiteStorage(Path(tmpdir) / "magpie.db")
+            storage.initialize()
+            run_id = storage.create_run("q", None, FreshnessClass.EVERGREEN, "compact")
+
+            # First round: commits cleanly and survives.
+            with storage.transaction():
+                query_id = storage.add_query(run_id, "round-one", "fake", FreshnessClass.EVERGREEN)
+                storage.add_search_results(query_id, [{"title": "T", "url": "https://example.com/a", "snippet": "s"}])
+
+            # Second round: fails mid-way, must roll back entirely.
+            with self.assertRaises(RuntimeError):
+                with storage.transaction():
+                    failed_query_id = storage.add_query(run_id, "round-two", "fake", FreshnessClass.EVERGREEN)
+                    storage.add_search_results(
+                        failed_query_id, [{"title": "T2", "url": "https://example.com/b", "snippet": "s2"}]
+                    )
+                    raise RuntimeError("simulated mid-round failure")
+
+            queries = storage.list_queries_for_run(run_id)
+        self.assertEqual(queries, ["round-one"])
+
+    def test_nested_transaction_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = SQLiteStorage(Path(tmpdir) / "magpie.db")
+            storage.initialize()
+
+            with self.assertRaises(StorageError):
+                with storage.transaction():
+                    with storage.transaction():
+                        pass
+
 
 if __name__ == "__main__":
     unittest.main()

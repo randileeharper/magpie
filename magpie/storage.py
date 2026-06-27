@@ -47,15 +47,28 @@ def _parse_utc(value: str) -> datetime:
 
 
 class SQLiteStorage:
-    """Short-lived connections keep storage safe across A2A worker threads."""
+    """Short-lived connections keep storage safe across A2A worker threads.
+
+    Write-heavy sequences (a research round) can instead hold a single
+    connection open via :meth:`transaction` so that all writes in the round
+    commit together or roll back together on failure.
+    """
 
     def __init__(self, database_path: Path):
         self._database_path = database_path
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize_lock = threading.Lock()
+        self._local = threading.local()
+
+    def _shared_connection(self) -> sqlite3.Connection | None:
+        return getattr(self._local, "connection", None)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
+        shared = self._shared_connection()
+        if shared is not None:
+            yield shared
+            return
         connection = sqlite3.connect(self._database_path, timeout=10)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
@@ -64,6 +77,36 @@ class SQLiteStorage:
             yield connection
             connection.commit()
         finally:
+            connection.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """Hold a single connection open for a sequence of writes.
+
+        All storage operations performed inside the ``with`` block share one
+        SQLite connection. On clean exit the connection is committed; on any
+        exception it is rolled back. This lets a caller group independent
+        write methods (``add_query``, ``add_search_results``,
+        ``upsert_source``, ``add_evidence_item`` ...) into one atomic unit
+        without changing the methods themselves.
+
+        Transactions are per-thread and may not be nested.
+        """
+        if self._shared_connection() is not None:
+            raise StorageError("Nested storage transactions are not supported.")
+        connection = sqlite3.connect(self._database_path, timeout=10)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 10000")
+        self._local.connection = connection
+        try:
+            yield connection
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            self._local.connection = None
             connection.close()
 
     def initialize(self) -> None:
