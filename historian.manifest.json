@@ -161,14 +161,14 @@
       "version": 1,
       "record_family": "event",
       "description": "A bounded grounded synthesis pass completed without storing answer prose.",
-      "searchable_fields": ["run_id", "source_id", "cited_source_ids", "source_answers_question"],
+      "searchable_fields": ["run_id", "cited_source_ids", "source_answers_question", "evidence_count"],
       "redacted_fields": [],
       "json_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "run_id": {"type": "string"},
-          "source_id": {"type": "string"},
+          "evidence_count": {"type": "integer", "minimum": 0},
           "cited_source_ids": {"type": "array", "items": {"type": "string"}},
           "source_answers_question": {"type": "boolean"},
           "remaining_question_count": {"type": "integer", "minimum": 0},
@@ -176,7 +176,7 @@
           "answer_characters": {"type": "integer", "minimum": 0},
           "duration_ms": {"type": "number", "minimum": 0}
         },
-        "required": ["run_id", "source_id", "cited_source_ids", "source_answers_question", "remaining_question_count", "summary_characters", "answer_characters", "duration_ms"],
+        "required": ["run_id", "evidence_count", "cited_source_ids", "source_answers_question", "remaining_question_count", "summary_characters", "answer_characters", "duration_ms"],
         "additionalProperties": false
       }
     },
