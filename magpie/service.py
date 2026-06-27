@@ -659,8 +659,12 @@ class ResearchService:
                 raise ResolverError(f"No source found at index {index} for run {run_id}.")
         if not url:
             raise ResolverError("fetch requires either (run_id + index) or url.")
-        started = perf_counter()
         fetch_run_id = run_id or str(uuid.uuid4())
+        if not run_id:
+            freshness = detect_freshness_class(url)
+            self.storage.create_run(url, None, freshness, ResponseDetail.COMPACT.value, run_id=fetch_run_id)
+            self._begin_logs(fetch_run_id, url)
+        started = perf_counter()
         try:
             fetched = self.fetcher.fetch(url)
             elapsed = round((perf_counter() - started) * 1000, 2)
