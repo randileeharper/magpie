@@ -229,6 +229,33 @@ class AniListProviderTests(unittest.TestCase):
 
         self.assertEqual(report.answer, "Bookworm Season 2\nEpisodes: 12")
 
+    def test_next_airing_formats_portably_without_leading_zeros(self) -> None:
+        previous_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "America/Los_Angeles"
+        time.tzset()
+        try:
+            def handler(request: httpx.Request) -> httpx.Response:
+                return httpx.Response(200, json={"data": {"Media": {
+                    "id": 1,
+                    "title": {"english": "Example Anime", "romaji": "Example"},
+                    "nextAiringEpisode": {"airingAt": 1781049600, "episode": 7},
+                }}})
+
+            client = AniListClient(Settings(anime_base_url="https://anilist.test"), httpx.MockTransport(handler))
+            report = client.get_anime_info(1, [AnimeField.NEXT_AIRING_EPISODE])
+        finally:
+            if previous_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = previous_tz
+            time.tzset()
+
+        # 1781049600 = 2026-06-09 17:00 PDT: single-digit day, hour 5 (no leading zero).
+        self.assertEqual(
+            report.answer,
+            "Example Anime\nNext airing: episode 7 on Tuesday, June 9 at 5:00 PM PDT",
+        )
+
     def test_schedule_converts_to_system_timezone_and_omits_metadata(self) -> None:
         previous_tz = os.environ.get("TZ")
         os.environ["TZ"] = "America/Los_Angeles"
@@ -238,7 +265,7 @@ class AniListProviderTests(unittest.TestCase):
                 body = json.loads(request.content)
                 self.assertNotIn("description", body["query"])
                 return httpx.Response(200, json={"data": {"Page": {"airingSchedules": [{
-                    "airingAt": 1781395200,
+                    "airingAt": 1781049600,
                     "episode": 3,
                     "media": {"id": 1, "title": {"english": "Example Anime", "romaji": "Example"}},
                 }]}}})
@@ -255,7 +282,15 @@ class AniListProviderTests(unittest.TestCase):
                 os.environ["TZ"] = previous_tz
             time.tzset()
 
-        self.assertIn("Example Anime, episode 3", report.answer)
+        # 1781049600 = 2026-06-09 17:00 PDT: single-digit day, hour 5 (no leading zero).
+        # The schedule header reflects the local run date; the per-episode line carries the airing time.
+        today = datetime.now().astimezone()
+        date_label = f"{today.strftime('%A, %B')} {today.day}, {today.year}"
+        self.assertEqual(
+            report.answer,
+            f"Anime airing schedule for {date_label} ({today.tzname()}):\n"
+            "5:00 PM - Example Anime, episode 3",
+        )
         self.assertNotIn("anilist:", report.answer)
 
 

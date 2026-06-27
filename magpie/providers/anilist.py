@@ -161,7 +161,7 @@ class AniListClient:
             if not isinstance(item, dict) or not isinstance(item.get("airingAt"), int):
                 return None
             airing = datetime.fromtimestamp(item["airingAt"]).astimezone()
-            return f"Next airing: episode {item.get('episode', '?')} on {airing.strftime('%A, %B %-d at %-I:%M %p %Z')}"
+            return f"Next airing: episode {item.get('episode', '?')} on {airing.strftime('%A, %B')} {airing.day} at {self._format_clock(airing)} {airing.strftime('%Z')}"
         return None
 
     def get_credits(self, anime_id: int) -> tuple[str, list[CharacterCredit], Reference]:
@@ -230,8 +230,8 @@ class AniListClient:
             media = item.get("media", {})
             title = self._title(media)
             airing = datetime.fromtimestamp(item["airingAt"]).astimezone()
-            lines.append(f"{airing.strftime('%-I:%M %p')} - {title}, episode {item.get('episode', '?')}")
-        date_label = local_now.strftime("%A, %B %-d, %Y")
+            lines.append(f"{self._format_clock(airing)} - {title}, episode {item.get('episode', '?')}")
+        date_label = f"{local_now.strftime('%A, %B')} {local_now.day}, {local_now.year}"
         zone_label = local_now.tzname() or "local time"
         answer = (
             f"Anime airing schedule for {date_label} ({zone_label}):\n" + "\n".join(lines)
@@ -329,6 +329,14 @@ class AniListClient:
         for punctuation in (".", ",", "!", "?", ":", ";"):
             text = text.replace(f" {punctuation}", punctuation)
         return text
+
+    @staticmethod
+    def _format_clock(dt: datetime) -> str:
+        """Portable 12-hour clock without a leading zero on the hour."""
+        hour = dt.hour % 12 or 12
+        minute = dt.strftime("%M")
+        meridiem = dt.strftime("%p")
+        return f"{hour}:{minute} {meridiem}"
 
     @staticmethod
     def _format_date(value: Any) -> str | None:
