@@ -65,6 +65,13 @@ def build_agent_card(base_url: str) -> AgentCard:
                 examples=["rust borrow checker", "a2a protocol", "latest AI news"],
                 input_modes=["text/plain"], output_modes=["application/json"],
             ),
+            AgentSkill(
+                id="magpie_fetch", name="Fetch web page content",
+                description="Fetch a web page by index from a previous search or by URL. Returns markdownified content.",
+                tags=["fetch", "content", "url"],
+                examples=["index 2", "https://example.com/article"],
+                input_modes=["text/plain"], output_modes=["application/json"],
+            ),
         ],
     )
 
@@ -95,6 +102,9 @@ class SDKResearchAgentExecutor(AgentExecutor):
                     max_results=int(metadata.get("max_references", 5)),
                     run_id=context.task_id,
                 )
+            elif skill == "magpie_fetch":
+                fetch_params = self._parse_fetch_request(question, metadata)
+                result = await asyncio.to_thread(self._service.fetch, **fetch_params)
             else:
                 request = ResearchRequest(
                     question=question,
@@ -108,13 +118,19 @@ class SDKResearchAgentExecutor(AgentExecutor):
             raise
         try:
             payload = to_jsonable(result)
-            artifact_name = "magpie-search-result" if skill == "magpie_search" else "magpie-ask-result"
+            artifact_name = (
+                "magpie-search-result" if skill == "magpie_search"
+                else "magpie-fetch-result" if skill == "magpie_fetch"
+                else "magpie-ask-result"
+            )
             await updater.add_artifact(
                 parts=[new_data_part(payload, media_type="application/json")],
                 name=artifact_name,
             )
             if skill == "magpie_search":
                 text_response = f"Found {len(result.results)} results for: {result.query}"
+            elif skill == "magpie_fetch":
+                text_response = f"Fetched {result.url} ({len(result.content)} chars via {result.fetched_via})"
             else:
                 text_response = (
                     getattr(result, "answer", "")
@@ -127,7 +143,7 @@ class SDKResearchAgentExecutor(AgentExecutor):
                 parts=[new_text_part(text_response),
                        new_data_part(payload, media_type="application/json")],
             )
-            if skill == "magpie_search":
+            if skill in {"magpie_search", "magpie_fetch"}:
                 await updater.complete(message)
             elif result.stop_reason == StopReason.CANCELLED:
                 await updater.update_status(TaskState.TASK_STATE_CANCELED, message)
@@ -148,6 +164,30 @@ class SDKResearchAgentExecutor(AgentExecutor):
         self._service.cancel_run(context.task_id)
         updater = TaskUpdater(event_queue=event_queue, task_id=context.task_id, context_id=context.context_id)
         await updater.update_status(TaskState.TASK_STATE_CANCELED)
+
+    @staticmethod
+    def _parse_fetch_request(question: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        import re
+        params: dict[str, Any] = {}
+        index_match = re.search(r"(?:index\s*)?(\d+)", question, re.IGNORECASE)
+        url_match = re.search(r"https?://\S+", question)
+        if "index" in metadata:
+            params["index"] = int(metadata["index"])
+        elif index_match and not url_match:
+            params["index"] = int(index_match.group(1))
+        if "url" in metadata:
+            params["url"] = metadata["url"]
+        elif url_match:
+            params["url"] = url_match.group(0).rstrip(".,;)")
+        if "full" in metadata:
+            params["full"] = bool(metadata["full"])
+        if "run_id" in metadata:
+            params["run_id"] = metadata["run_id"]
+        elif params.get("index") is not None:
+            raise InvalidParamsError("fetch by index requires run_id in metadata or prior search context.")
+        if not params.get("index") and not params.get("url"):
+            raise InvalidParamsError("fetch requires an index number or a URL.")
+        return params
 
 
 def build_sdk_server(service: ResearchService, base_url: str) -> dict[str, Any]:

@@ -33,6 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--max-results", type=int, default=5)
     search.add_argument("--json", action="store_true", dest="as_json")
 
+    fetch = subparsers.add_parser("fetch", help="Fetch web page content by index or URL.")
+    fetch.add_argument("target", help="Index number (from a prior search) or URL.")
+    fetch.add_argument("--run-id", default=None, help="Run ID from a prior magpie search.")
+    fetch.add_argument("--full", action="store_true", help="Fetch the full page via crawl4ai instead of stored content.")
+    fetch.add_argument("--json", action="store_true", dest="as_json")
+
     serve = subparsers.add_parser("serve", help="Run the local A2A server.")
     serve.add_argument("--host", default=None, help="Override the configured bind host.")
     serve.add_argument("--port", type=int, default=None, help="Override the configured bind port.")
@@ -88,6 +94,20 @@ def _search_output(payload: dict[str, object]) -> str:
         lines.append("warnings:")
         for warning in warnings:
             lines.append(f"  - {warning}")
+    return "\n".join(lines)
+
+
+def _fetch_output(payload: dict[str, object]) -> str:
+    lines = [
+        f"run_id: {payload.get('run_id')}",
+        f"url: {payload.get('url')}",
+        f"title: {payload.get('title')}",
+        f"fetched_via: {payload.get('fetched_via')}",
+        f"content_length: {len(str(payload.get('content', '')))}",
+        "",
+        "content:",
+        str(payload.get("content", "")),
+    ]
     return "\n".join(lines)
 
 
@@ -163,6 +183,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
                 print(valid_unicode(_search_output(payload)))
+            return 0
+
+        if args.command == "fetch":
+            try:
+                from .app import build_app as _build_app
+                _app = _build_app(args.config_path)
+                target = args.target
+                is_url = target.startswith("http://") or target.startswith("https://")
+                fetch_kwargs: dict[str, object] = {}
+                if is_url:
+                    fetch_kwargs["url"] = target
+                else:
+                    fetch_kwargs["index"] = int(target)
+                    if args.run_id:
+                        fetch_kwargs["run_id"] = args.run_id
+                if args.full:
+                    fetch_kwargs["full"] = True
+                result = _app.service.fetch(**fetch_kwargs)
+                payload = to_jsonable(result)
+                _app.service.close()
+                _app.storage.close()
+            except Exception as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            if args.as_json:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(valid_unicode(_fetch_output(payload)))
             return 0
 
         settings = Settings.load(args.config_path)

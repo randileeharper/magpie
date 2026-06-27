@@ -165,7 +165,6 @@ class IndexedSearchResultItem:
     site_name: str | None
     published_at: str | None
     summary: str
-    content: str
 
 
 @dataclass(slots=True)
@@ -173,6 +172,17 @@ class IndexedSearchResult:
     run_id: str
     query: str
     results: list[IndexedSearchResultItem]
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class FetchResult:
+    run_id: str
+    index: int | None
+    url: str
+    title: str
+    content: str
+    fetched_via: str
     warnings: list[str] = field(default_factory=list)
 
 
