@@ -925,6 +925,44 @@ class ServiceTests(unittest.TestCase):
             self.assertGreater(len(app.routes), 0)
             service.storage.close()
 
+    def test_failed_round_rolls_back_while_prior_round_persists(self) -> None:
+        """A failure during a research round must roll back that round's writes
+        (query, search results, sources) while leaving the run record intact.
+        """
+        class ExplodingSynthesisResolver(FakeResolverClient):
+            def synthesize(self, question, evidence, prior_draft=None):
+                raise RuntimeError("simulated synthesis failure")
+
+        class TwoResultSearch(FakeSearchClient):
+            def search(self, request):
+                return [
+                    SearchResultRecord("One", "https://example.com/one", "one", provider="fake"),
+                    SearchResultRecord("Two", "https://example.com/two", "two", provider="fake"),
+                ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(
+                tmpdir,
+                resolver=ExplodingSynthesisResolver(),
+                search_client=TwoResultSearch(),
+            )
+            result = service.research(ResearchRequest(question="question"))
+
+            self.assertEqual(result.status, "error")
+            # The run row was written outside the transaction and survives.
+            run = service.storage.get_run(result.run_id)
+            self.assertEqual(run["status"], "failed")
+            # The round's query was rolled back by the transaction.
+            with service.storage._connect() as connection:
+                queries = connection.execute(
+                    "SELECT COUNT(*) FROM research_queries WHERE run_id=?", (result.run_id,)
+                ).fetchone()[0]
+                sources = connection.execute(
+                    "SELECT COUNT(*) FROM run_source_links WHERE run_id=?", (result.run_id,)
+                ).fetchone()[0]
+            self.assertEqual(queries, 0)
+            self.assertEqual(sources, 0)
+
 
 class FreshnessDetectionTests(unittest.TestCase):
     def test_future_year_is_not_recent(self) -> None:
