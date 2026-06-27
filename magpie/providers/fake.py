@@ -32,10 +32,13 @@ from ..models import (
 from .base import reasoning_request_options
 
 
+_TOKEN_PATTERN = re.compile(r"[a-z0-9]+|[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]", re.IGNORECASE)
+
+
 def _tokens(text: str) -> set[str]:
     return {
         token
-        for token in re.findall(r"[a-z0-9]+", text.lower())
+        for token in _TOKEN_PATTERN.findall(text.lower())
         if len(token) > 2 and token not in {"the", "and", "for", "with", "that"}
     }
 

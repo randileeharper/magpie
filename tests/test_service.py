@@ -818,6 +818,26 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("500g flour", item.excerpt)
         self.assertNotIn("[Shop]", item.excerpt)
 
+    def test_non_english_evidence_is_scored_by_unicode_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            run_id = service.storage.create_run("q", None, FreshnessClass.EVERGREEN, "compact")
+            budget = type("Budget", (), {"evidence_remaining": 1})()
+            text = (
+                "[Menu](https://example.com/menu) [Shop](https://example.com/shop)\n\n"
+                "来世は他人がいい。キリシマはある意味で最も誠実なキャラクターである。"
+            )
+            source_id = service.storage.upsert_source(
+                run_id, "https://example.com/anime", "Anime", None, None, text, {}
+            )
+            item = service._select_evidence(
+                run_id, source_id, text, "キリシマの正体は何か", [], budget, []
+            )
+
+        self.assertIsNotNone(item)
+        self.assertIn("キリシマ", item.excerpt)
+        self.assertNotIn("[Shop]", item.excerpt)
+
     def test_debug_response_includes_reasoning_request_options(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = self._service(tmpdir)

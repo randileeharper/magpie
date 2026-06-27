@@ -28,6 +28,10 @@ from .routes import try_specialized_route
 
 RECENT_SIGNALS = {"latest", "current", "today", "yesterday", "this week", "this month", "this year"}
 PROCEDURAL_SIGNALS = ("how do i ", "how to ", "steps to ", "guide to ")
+# Tokenize for evidence overlap scoring: word runs for space-delimited scripts
+# (Latin, Cyrillic, …) plus individual characters for CJK scripts that don't
+# use word boundaries, so Japanese/Chinese/Korean queries score correctly.
+_TOKEN_PATTERN = re.compile(r"[a-z0-9]+|[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]", re.IGNORECASE)
 ACTIONABLE_SECTION_SIGNALS = (
     "instruction", "method", "step", "directions", "preparation", "procedure",
     "how to", "process",
@@ -827,12 +831,12 @@ class ResearchService:
             return None
         max_chars = self.settings.max_evidence_characters_per_item
         chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n|(?<=[.!?])\s+", text) if chunk.strip()]
-        terms = set(re.findall(r"[a-z0-9]+", " ".join([question, *remaining_questions]).lower()))
+        terms = set(_TOKEN_PATTERN.findall(" ".join([question, *remaining_questions]).lower()))
         procedural = self._is_procedural(question)
         scored: list[tuple[int, int, str]] = []
         for index, chunk in enumerate(chunks):
             lowered = chunk.lower()
-            tokens = set(re.findall(r"[a-z0-9]+", lowered))
+            tokens = set(_TOKEN_PATTERN.findall(lowered))
             score = len(terms & tokens) * 3
             if procedural:
                 score += sum(3 for signal in ACTIONABLE_SECTION_SIGNALS if signal in lowered)
