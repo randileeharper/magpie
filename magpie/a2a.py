@@ -116,6 +116,9 @@ class SDKResearchAgentExecutor(AgentExecutor):
         except asyncio.CancelledError:
             self._service.cancel_run(context.task_id)
             raise
+        except Exception as exc:  # noqa: BLE001
+            await updater.failed(self._failure_message(context, exc))
+            return
         try:
             payload = to_jsonable(result)
             artifact_name = (
@@ -152,11 +155,7 @@ class SDKResearchAgentExecutor(AgentExecutor):
             else:
                 await updater.failed(message)
         except Exception as exc:  # noqa: BLE001
-            await updater.failed(Message(
-                role=Role.ROLE_AGENT, message_id=str(uuid4()), task_id=context.task_id,
-                context_id=context.context_id,
-                parts=[new_text_part(str(exc)), new_data_part({"status": "error", "message": str(exc)})],
-            ))
+            await updater.failed(self._failure_message(context, exc))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         if not context.task_id or not context.context_id:
@@ -188,6 +187,14 @@ class SDKResearchAgentExecutor(AgentExecutor):
         if not params.get("index") and not params.get("url"):
             raise InvalidParamsError("fetch requires an index number or a URL.")
         return params
+
+    @staticmethod
+    def _failure_message(context: RequestContext, exc: BaseException) -> Message:
+        return Message(
+            role=Role.ROLE_AGENT, message_id=str(uuid4()), task_id=context.task_id,
+            context_id=context.context_id,
+            parts=[new_text_part(str(exc)), new_data_part({"status": "error", "message": str(exc)})],
+        )
 
 
 def build_sdk_server(service: ResearchService, base_url: str) -> dict[str, Any]:
