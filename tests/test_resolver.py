@@ -178,7 +178,7 @@ class OpenAICompatibleResolverTests(unittest.TestCase):
         self.assertEqual(draft.answer, "")
         self.assertEqual(draft.cited_source_ids, [])
 
-    def test_synthesize_rejects_markdown_wrapped_json(self) -> None:
+    def test_synthesize_accepts_markdown_wrapped_json(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200,
@@ -204,8 +204,40 @@ class OpenAICompatibleResolverTests(unittest.TestCase):
                 settings=self._settings(tmpdir),
                 transport=httpx.MockTransport(handler),
             )
-            with self.assertRaisesRegex(Exception, "Resolver returned malformed JSON"):
-                client.synthesize("question", evidence)
+            draft = client.synthesize("question", evidence)
+
+        self.assertEqual(draft.answer, "fact")
+        self.assertEqual(draft.cited_source_ids, ["source-1"])
+
+    def test_synthesize_accepts_plain_code_fence_with_surrounding_whitespace(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    "  \n```\n"
+                                    '{"summary":"short","answer":"fact","cited_source_ids":["source-1"],'
+                                    '"remaining_questions":[],"source_answers_question":true}\n'
+                                    "```  \n"
+                                )
+                            }
+                        }
+                    ]
+                },
+            )
+
+        evidence = [EvidenceItem(evidence_id="e-1", source_id="source-1", excerpt="fact", note="note")]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(tmpdir),
+                transport=httpx.MockTransport(handler),
+            )
+            draft = client.synthesize("question", evidence)
+
+        self.assertEqual(draft.answer, "fact")
 
     def test_synthesize_accepts_valid_json_with_trailing_tool_marker(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:

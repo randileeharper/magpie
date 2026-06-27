@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -574,6 +575,7 @@ class OpenAICompatibleResolverClient:
         return [str(item).strip() for item in value if str(item).strip()]
 
     def _load_json_object_prefix(self, content: str) -> dict[str, Any]:
+        content = self._strip_code_fence(content)
         decoder = json.JSONDecoder()
         parsed, end = decoder.raw_decode(content)
         if not isinstance(parsed, dict):
@@ -582,6 +584,24 @@ class OpenAICompatibleResolverClient:
         if trailing and not self._is_ignorable_trailing_output(trailing):
             raise json.JSONDecodeError("Unexpected trailing content", content, end)
         return parsed
+
+    _CODE_FENCE_RE = re.compile(
+        r"\A\s*```(?:json)?\s*\n(?P<body>.*?)\n\s*```\s*\Z",
+        re.DOTALL,
+    )
+
+    def _strip_code_fence(self, content: str) -> str:
+        """Strip a single markdown code-fence wrapper around the whole payload.
+
+        Local models frequently emit JSON wrapped in ```` ```json ```` fences.
+        Only a fence enclosing the *entire* payload is stripped here; fences
+        appearing *inside* parsed values are still treated as control artifacts
+        by ``_payload_contains_control_artifacts`` and trigger a retry.
+        """
+        match = self._CODE_FENCE_RE.match(content)
+        if match:
+            return match.group("body")
+        return content
 
     def _is_ignorable_trailing_output(self, trailing: str) -> bool:
         ignorable_prefixes = (

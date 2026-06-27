@@ -448,6 +448,51 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(holder["result"].stop_reason.value, "cancelled")
         self.assertIsNone(final_answer)
 
+    def test_cross_path_cancel_race_emits_one_terminal_event(self) -> None:
+        # cancel_run (A2A path) racing with research()'s ResearchCancelled
+        # handler must emit exactly one research.run.canceled terminal, even
+        # though both paths attempt the durable cancel transition.
+        class BlockingSearch(FakeSearchClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.started = threading.Event()
+                self.release = threading.Event()
+
+            def search(self, request):
+                self.started.set()
+                self.release.wait(2)
+                return super().search(request)
+
+        sink = FakeHistorianSink()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(
+                tmpdir, search_client=BlockingSearch(), historian_sink=sink,
+            )
+            holder: dict[str, object] = {}
+            thread = threading.Thread(
+                target=lambda: holder.setdefault(
+                    "result",
+                    service.research(
+                        ResearchRequest(question="who is the mayor of New York?"),
+                        run_id="race-run",
+                    ),
+                )
+            )
+            thread.start()
+            try:
+                self.assertTrue(service.search_client.started.wait(1))
+                service.cancel_run("race-run")
+                service.search_client.release.set()
+            finally:
+                thread.join(2)
+
+            self.assertFalse(thread.is_alive())
+            event_types = [event["type"] for event in sink.events]
+            self.assertEqual(event_types.count("research.run.canceled"), 1)
+            run = service.storage.get_run("race-run")
+            self.assertEqual(run["status"], "cancelled")
+            service.storage.close()
+
     def test_news_route_bypasses_web_research(self) -> None:
         class ExplodingSearch(FakeSearchClient):
             def search(self, request):
@@ -923,6 +968,33 @@ class ServiceTests(unittest.TestCase):
 
         self.assertEqual(run["status"], "completed")
         self.assertEqual(run["cancel_requested"], 0)
+
+    def test_terminal_event_is_emitted_at_most_once_per_run(self) -> None:
+        # The per-run terminal guard must drop a second terminal event for the
+        # same run regardless of which code path attempts it. This is the
+        # structural guarantee behind "exactly one terminal per run"; the
+        # mark_run_cancelled atomicity only covers the cancel-vs-cancel race.
+        sink = FakeHistorianSink()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir, historian_sink=sink)
+            run_id = service.storage.create_run(
+                "q", None, FreshnessClass.EVERGREEN, "compact", run_id="dedup-run"
+            )
+            service._emit_run_event(run_id, "research.run.completed", {
+                "run_id": run_id, "status": "ok", "route": "web_research",
+                "stop_reason": "needed_new_search", "reference_ids": [],
+                "counts": {}, "timings_ms": {}, "duration_ms": 1.0,
+            })
+            # A second terminal (e.g. a racing cancellation) must be dropped.
+            service._emit_run_event(run_id, "research.run.canceled", {
+                "run_id": run_id, "status": "canceled", "stop_reason": "cancelled",
+            })
+            service._clear_run_state(run_id)
+            service.storage.close()
+
+        event_types = [event["type"] for event in sink.events]
+        self.assertEqual(event_types.count("research.run.completed"), 1)
+        self.assertEqual(event_types.count("research.run.canceled"), 0)
 
     def test_fetches_top_five_results_at_most(self) -> None:
         class ManyResultsSearch(FakeSearchClient):

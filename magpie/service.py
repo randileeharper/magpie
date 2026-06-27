@@ -106,6 +106,7 @@ class ResearchService:
     historian_sink: HistorianSink = field(default_factory=NullHistorianSink)
     _resolver_semaphore: threading.BoundedSemaphore = field(default=_GLOBAL_RESOLVER_GATE)
     _telemetry: dict[str, RunTelemetry] = field(default_factory=dict)
+    _terminal_emitted: set[str] = field(default_factory=set)
     _telemetry_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def cancel_run(self, run_id: str) -> None:
@@ -163,6 +164,11 @@ class ResearchService:
         source: str = "app://magpie/research",
     ) -> str:
         telemetry = self._get_telemetry(run_id)
+        if self._is_terminal_event(event_type) and not self._mark_terminal_emitted(run_id):
+            # A run must emit exactly one terminal historian event. If one has
+            # already been emitted for this run (e.g. a cancel raced with the
+            # research loop's own cancellation handler), drop the duplicate.
+            return ""
         return self._emit(
             event_type,
             data,
@@ -171,6 +177,30 @@ class ResearchService:
             causation_id=telemetry.started_event_id if telemetry else None,
             source=source,
         )
+
+    _TERMINAL_EVENT_TYPES = frozenset({
+        "research.run.completed",
+        "research.run.partial",
+        "research.run.failed",
+        "research.run.canceled",
+    })
+
+    def _is_terminal_event(self, event_type: str) -> bool:
+        return event_type in self._TERMINAL_EVENT_TYPES
+
+    def _mark_terminal_emitted(self, run_id: str) -> bool:
+        """Record that a terminal event is being emitted for a run.
+
+        Returns True if this is the first terminal for the run (caller should
+        emit), or False if a terminal was already emitted (caller should drop
+        the duplicate). Guarded by the telemetry lock so concurrent emit paths
+        for the same run cannot both observe "first".
+        """
+        with self._telemetry_lock:
+            if run_id in self._terminal_emitted:
+                return False
+            self._terminal_emitted.add(run_id)
+            return True
 
     def _sanitize_event_data(self, value: Any) -> Any:
         secrets = [
@@ -600,8 +630,13 @@ class ResearchService:
             LOGGER.exception("Internal error during research run %s", run_id)
             return self._finish_run_failure(run_id, request, timings, exc, StopReason.INTERNAL_ERROR)
         finally:
-            with self._telemetry_lock:
-                self._telemetry.pop(run_id, None)
+            self._clear_run_state(run_id)
+
+    def _clear_run_state(self, run_id: str) -> None:
+        """Drop in-memory run state (telemetry, terminal-event guard) after a run ends."""
+        with self._telemetry_lock:
+            self._telemetry.pop(run_id, None)
+            self._terminal_emitted.discard(run_id)
 
     def _finish_run_failure(
         self,
@@ -759,8 +794,7 @@ class ResearchService:
             raise ResolverError(f"Failed to fetch {url}: {exc}") from exc
         finally:
             if owns_run:
-                with self._telemetry_lock:
-                    self._telemetry.pop(fetch_run_id, None)
+                self._clear_run_state(fetch_run_id)
 
     def _start_run(
         self, run_id: str, question: str, run_label: str | None,

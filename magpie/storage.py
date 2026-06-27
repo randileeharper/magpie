@@ -381,15 +381,25 @@ class SQLiteStorage:
         return item
 
     def get_source_references(self, source_ids: list[str]) -> list[Reference]:
-        references: list[Reference] = []
+        if not source_ids:
+            return []
+        # Batch the lookup in one query rather than one SELECT per source_id,
+        # then preserve the caller's requested order in the returned list.
+        placeholders = ",".join("?" for _ in source_ids)
         with self._connect() as connection:
-            for source_id in source_ids:
-                row = connection.execute("SELECT * FROM sources WHERE source_id=?", (source_id,)).fetchone()
-                if row:
-                    references.append(Reference(
-                        row["source_id"], row["title"], row["raw_url"], row["site_name"],
-                        row["published_at"], row["fetched_at"], SourceKind(row["source_kind"]),
-                    ))
+            rows = connection.execute(
+                f"SELECT * FROM sources WHERE source_id IN ({placeholders})",
+                tuple(source_ids),
+            ).fetchall()
+        by_id = {row["source_id"]: row for row in rows}
+        references: list[Reference] = []
+        for source_id in source_ids:
+            row = by_id.get(source_id)
+            if row:
+                references.append(Reference(
+                    row["source_id"], row["title"], row["raw_url"], row["site_name"],
+                    row["published_at"], row["fetched_at"], SourceKind(row["source_kind"]),
+                ))
         return references
 
     def save_final_answer(self, run_id: str, summary: str, answer: str, references: list[Reference]) -> None:
