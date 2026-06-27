@@ -51,7 +51,6 @@ _MEASUREMENT_PATTERN = re.compile(
     r"mb|gb|tb|kb"
     r")\b"
 )
-_GLOBAL_RESOLVER_GATE = threading.BoundedSemaphore(1)
 _FETCH_LOG_LOCK = threading.Lock()
 LOGGER = logging.getLogger(__name__)
 
@@ -104,7 +103,7 @@ class ResearchService:
     anime_client: AnimeClient | None = None
     news_client: NewsClient | None = None
     historian_sink: HistorianSink = field(default_factory=NullHistorianSink)
-    _resolver_semaphore: threading.BoundedSemaphore = field(default=_GLOBAL_RESOLVER_GATE)
+    _resolver_semaphore: threading.Lock = field(default_factory=threading.Lock)
     _telemetry: dict[str, RunTelemetry] = field(default_factory=dict)
     _terminal_emitted: set[str] = field(default_factory=set)
     _telemetry_lock: threading.Lock = field(default_factory=threading.Lock)
