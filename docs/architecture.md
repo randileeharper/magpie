@@ -36,7 +36,15 @@ magpie/
   app.py            Wires services together for CLI and A2A entrypoints
   cli.py            `magpie` command-line interface
   a2a.py            A2A server, agent card, executor, local A2A client
-  service.py        ResearchService: routing, research loop, synthesis, fetch
+  service.py        ResearchService: run orchestration (research loop, search,
+                    fetch) coordinating evidence selection, telemetry, and
+                    run state. Thin shims delegate to the collaborators below.
+  evidence.py       EvidenceSelector: regex scoring and chunking that turns
+                    fetched text into bounded evidence extracts
+  telemetry.py      TelemetryEmitter + RunTelemetry: historian event emission,
+                    per-run counters, terminal-event guard, secret sanitization
+  runcontext.py     RunContext: mutable loop state (budget, warnings,
+                    limitations, seen URLs, remaining questions, draft)
   routes.py         Specialized route handlers (weather, anime, news)
   storage.py        SQLiteStorage: schema, runs, sources, evidence, events
   models.py         Dataclasses and enums shared across modules
@@ -126,8 +134,12 @@ General web lookup follows a bounded batch loop implemented in
    remain; otherwise finalize the answer.
 
 A run keeps a `RunBudget` tracking remaining queries, sources, and evidence
-items. The loop exits early when the budget is exhausted, the planner cannot
-produce a new useful query, or the answer is complete.
+items, carried alongside the accumulated warnings, limitations, seen URLs,
+remaining questions, and last synthesis draft in a `RunContext`. The loop
+exits early when the budget is exhausted, the planner cannot produce a new
+useful query, or the answer is complete. Per-run counters and historian events
+are tracked by `TelemetryEmitter`; evidence scoring and chunking are owned by
+`EvidenceSelector`. `ResearchService` coordinates the three.
 
 ### Source acceptance
 
