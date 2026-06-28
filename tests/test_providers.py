@@ -408,7 +408,7 @@ class NewsRSSProviderTests(unittest.TestCase):
 
         self.assertEqual(calls, 1)
 
-    def test_backfill_respects_per_source_limit(self) -> None:
+    def test_per_source_limit_caps_selection_below_max(self) -> None:
         now = datetime.now().astimezone().strftime("%a, %d %b %Y %H:%M:%S %z")
         items = "\n".join(
             f"<item><title>Story {i}</title><link>https://example.com/s{i}</link>"
@@ -435,8 +435,9 @@ class NewsRSSProviderTests(unittest.TestCase):
                 5,
             )
 
-        # news_per_source_limit defaults to 1 in these tests; the backfill loop
-        # must honor the same cap as the primary selection loop.
+        # news_per_source_limit defaults to 1 in these tests; all four items
+        # come from one source, so the per-source cap must limit the digest to
+        # one item even though max_items (5) would allow more.
         self.assertEqual(len(report.references), 1)
 
     def test_empty_feed_results_are_not_cached(self) -> None:
