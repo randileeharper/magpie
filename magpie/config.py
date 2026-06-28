@@ -34,6 +34,18 @@ def default_config_path() -> Path:
     return DEFAULT_CONFIG_CANDIDATES[-1].expanduser()
 
 
+def read_config_template() -> str:
+    """Return the text of the packaged config template."""
+    try:
+        return files("magpie").joinpath(CONFIG_TEMPLATE_NAME).read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise ConfigError(
+            f"Packaged config template not found: {CONFIG_TEMPLATE_NAME}. "
+            "Your Magpie installation may be incomplete; reinstall with "
+            "'uv tool install --force git+https://github.com/randileeharper/magpie'."
+        ) from exc
+
+
 def write_default_config(target: Path | None = None, *, force: bool = False) -> Path:
     """Write the packaged template config to *target* (default: XDG path).
 
@@ -45,14 +57,7 @@ def write_default_config(target: Path | None = None, *, force: bool = False) -> 
     target = Path(target).expanduser()
     if target.is_file() and not force:
         raise ConfigError(f"Config file already exists: {target}. Use --force to overwrite.")
-    try:
-        template = files("magpie").joinpath(CONFIG_TEMPLATE_NAME).read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise ConfigError(
-            f"Packaged config template not found: {CONFIG_TEMPLATE_NAME}. "
-            "Your Magpie installation may be incomplete; reinstall with "
-            "'uv tool install --force git+https://github.com/randileeharper/magpie'."
-        ) from exc
+    template = read_config_template()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(template, encoding="utf-8")
     return target

@@ -52,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     config = subparsers.add_parser("config", help="Manage Magpie configuration.")
     config_subparsers = config.add_subparsers(dest="config_command", required=True)
+
     config_init = config_subparsers.add_parser("init", help="Write the default config file.")
     config_init.add_argument(
         "--path",
@@ -60,6 +61,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Config file path (default: ~/.config/magpie/config.json)",
     )
     config_init.add_argument("--force", action="store_true", help="Overwrite an existing config file.")
+    config_init.add_argument(
+        "--print",
+        action="store_true",
+        help="Print the template to stdout instead of writing a file.",
+    )
+
+    config_subparsers.add_parser("path", help="Print the path Magpie loads config from.")
     return parser
 
 
@@ -161,7 +169,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return exit_code
 
     if args.command == "config" and args.config_command == "init":
-        from .config import write_default_config
+        from .config import read_config_template, write_default_config
+
+        if args.print:
+            try:
+                template = read_config_template()
+            except ConfigError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            print(template, end="")
+            return 0
 
         try:
             path = write_default_config(args.path, force=args.force)
@@ -169,6 +186,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 2
         print(f"Wrote config to {path}")
+        return 0
+
+    if args.command == "config" and args.config_command == "path":
+        try:
+            settings = Settings.load(args.config_path)
+        except (ConfigError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(settings.loaded_config_path or "(none — using built-in defaults)")
         return 0
 
     app: AppContext | None = None

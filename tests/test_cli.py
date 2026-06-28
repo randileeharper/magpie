@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
@@ -379,6 +380,57 @@ class CLITests(unittest.TestCase):
             exit_code = cli.main(["config", "init", "--path", str(target), "--force"])
             self.assertEqual(exit_code, 0)
             self.assertEqual(target.read_text(encoding="utf-8"), expected)
+
+    def test_config_init_print_outputs_template(self) -> None:
+        from importlib.resources import files
+
+        expected = files("magpie").joinpath("config.example.json").read_text(encoding="utf-8")
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            exit_code = cli.main(["config", "init", "--print"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stdout.getvalue(), expected)
+
+    def test_config_init_print_does_not_write_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous_cwd = Path.cwd()
+            os.chdir(tmpdir)
+            try:
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    cli.main(["config", "init", "--print"])
+            finally:
+                os.chdir(previous_cwd)
+        self.assertFalse((Path(tmpdir) / "config.json").exists())
+
+    def test_config_path_prints_loaded_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.json"
+            config_path.write_text(json.dumps({"database_path": str(Path(tmpdir) / "magpie.db")}), encoding="utf-8")
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = cli.main(["--config", str(config_path), "config", "path"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stdout.getvalue().strip(), str(config_path.resolve()))
+
+    def test_config_path_reports_none_when_no_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous_cwd = Path.cwd()
+            previous_home = os.environ.get("HOME")
+            os.chdir(tmpdir)
+            os.environ["HOME"] = tmpdir
+            try:
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    exit_code = cli.main(["config", "path"])
+            finally:
+                os.chdir(previous_cwd)
+                if previous_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = previous_home
+        self.assertEqual(exit_code, 0)
+        self.assertIn("none", stdout.getvalue())
 
 
 if __name__ == "__main__":

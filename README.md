@@ -131,7 +131,13 @@ uv run magpie fetch 2 --run-id <run_id> --full
 uv run magpie doctor --live
 uv run magpie clear-cache
 uv run magpie config init
+uv run magpie config path
 ```
+
+`magpie config init` writes the packaged template to `~/.config/magpie/config.json`
+(use `--path` for a custom location, `--force` to overwrite, or `--print` to
+output the template to stdout without writing a file). `magpie config path`
+prints the config file Magpie loaded from (or `none` if using built-in defaults).
 
 `magpie ask` first tries the configured local A2A server. If initial A2A
 discovery or connection fails, it runs the same service directly. It does not
