@@ -28,6 +28,14 @@ The built-in RSS registry (`magpie/news_feeds.json`) is intended for local or
 personal aggregation. Check publisher terms before redistributing feed content.
 A custom registry can be supplied via `news_feed_registry_path`.
 
+## Config Template
+
+The packaged template (`magpie/config.example.json`) is the single source of
+truth for the default config. It is included in the wheel and written to
+`~/.config/magpie/config.json` by `magpie config init`. When adding or renaming
+a `Settings` field, update `magpie/config.example.json` in the same change so
+`config init` stays consistent with the dataclass.
+
 ## Testing
 
 The test suite uses Python's `unittest` and is also runnable under `pytest`.
