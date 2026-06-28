@@ -13,8 +13,11 @@ from time import perf_counter
 from typing import Any
 
 from .errors import FetchError, ResearchCancelled, ResolverError, SearchError, StorageError
+from .evidence import EvidenceSelector
+from .telemetry import RunTelemetry, TelemetryEmitter
+from .runcontext import RunContext
 from .config import Settings
-from .historian import HistorianSink, NullHistorianSink, build_event
+from .historian import HistorianSink, NullHistorianSink
 from .models import (
     EvidenceItem, FetchResult, FreshnessClass, IndexedSearchResult,
     IndexedSearchResultItem, PlanningContext,
@@ -23,34 +26,10 @@ from .models import (
 )
 from .providers.base import AnimeClient, Fetcher, NewsClient, ResolverClient, SearchClient, WeatherClient
 from .storage import SQLiteStorage, canonicalize_url, normalize_query
-from .text import valid_unicode
 from .routes import try_specialized_route
 
 
 RECENT_SIGNALS = {"latest", "current", "today", "yesterday", "this week", "this month", "this year"}
-PROCEDURAL_SIGNALS = ("how do i ", "how to ", "steps to ", "guide to ")
-# Tokenize for evidence overlap scoring: word runs for space-delimited scripts
-# (Latin, Cyrillic, …) plus individual characters for CJK scripts that don't
-# use word boundaries, so Japanese/Chinese/Korean queries score correctly.
-_TOKEN_PATTERN = re.compile(r"[a-z0-9]+|[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]", re.IGNORECASE)
-ACTIONABLE_SECTION_SIGNALS = (
-    "instruction", "method", "step", "directions", "preparation", "procedure",
-    "how to", "process",
-)
-IMPERATIVE_SIGNALS = (
-    "add ", "combine ", "connect ", "cover ", "create ", "enter ", "install ", "mix ",
-    "place ", "press ", "remove ", "run ", "set ", "turn ", "type ", "wait ",
-)
-# Matches any measurement a procedural answer might cite, not only cooking ones.
-_MEASUREMENT_PATTERN = re.compile(
-    r"\b\d+(?:\.\d+)?\s*(?:"
-    r"g|kg|mg|ml|l|cup|cups|tsp|tbsp|oz|lb|"
-    r"minutes?|mins?|seconds?|secs?|hours?|hrs?|days?|"
-    r"°f|°c|"
-    r"px|pt|em|rem|"
-    r"mb|gb|tb|kb"
-    r")\b"
-)
 _FETCH_LOG_LOCK = threading.Lock()
 LOGGER = logging.getLogger(__name__)
 
@@ -62,23 +41,6 @@ LOGGER = logging.getLogger(__name__)
 _DOMAIN_RUN_ERRORS: tuple[type[BaseException], ...] = (
     ResolverError, SearchError, FetchError, StorageError, httpx.HTTPError,
 )
-
-
-@dataclass(slots=True)
-class RunTelemetry:
-    run_id: str
-    started_at: float
-    started_event_id: str
-    freshness_class: FreshnessClass
-    route: str = "unselected"
-    stage: str = "run"
-    queries: int = 0
-    sources_discovered: int = 0
-    sources_fetched: int = 0
-    sources_rejected: int = 0
-    cache_hits: int = 0
-    syntheses: int = 0
-    operation_error_recorded: bool = False
 
 
 def detect_freshness_class(question: str) -> FreshnessClass:
@@ -154,9 +116,15 @@ class ResearchService:
     news_client: NewsClient | None = None
     historian_sink: HistorianSink = field(default_factory=NullHistorianSink)
     _resolver_semaphore: threading.Lock = field(default_factory=threading.Lock)
-    _telemetry: dict[str, RunTelemetry] = field(default_factory=dict)
-    _terminal_emitted: set[str] = field(default_factory=set)
-    _telemetry_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Derived collaborators, built in __post_init__ from the fields above so
+    # the constructor signature (a public contract used by tests, app.py, and
+    # a2a.py) stays unchanged. ``init=False`` keeps them out of __init__.
+    _evidence: EvidenceSelector = field(init=False)
+    _telemetry_emitter: TelemetryEmitter = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._evidence = EvidenceSelector(self.storage, self.settings)
+        self._telemetry_emitter = TelemetryEmitter(self.historian_sink, self.settings)
 
     def cancel_run(self, run_id: str) -> None:
         if self.storage.request_cancel(run_id) and self.storage.mark_run_cancelled(run_id):
@@ -184,24 +152,13 @@ class ResearchService:
         causation_id: str | None = None,
         source: str = "app://magpie/research",
     ) -> str:
-        event = build_event(
-            event_type,
-            self._sanitize_event_data(data),
-            source=source,
-            subject=subject,
-            correlation_id=correlation_id,
-            causation_id=causation_id,
+        # Delegated to TelemetryEmitter. Kept as a thin shim so existing
+        # callers (including tests reaching this private method) keep working.
+        return self._telemetry_emitter.emit(
+            event_type, data,
+            subject=subject, correlation_id=correlation_id,
+            causation_id=causation_id, source=source,
         )
-        try:
-            self.historian_sink.emit(event)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning(
-                "Historian delivery failed for event_id=%s type=%s: %s",
-                event["id"],
-                event_type,
-                exc,
-            )
-        return str(event["id"])
 
     def _emit_run_event(
         self,
@@ -212,115 +169,27 @@ class ResearchService:
         subject: str | None = None,
         source: str = "app://magpie/research",
     ) -> str:
-        telemetry = self._get_telemetry(run_id)
-        if self._is_terminal_event(event_type) and not self._mark_terminal_emitted(run_id):
-            # A run must emit exactly one terminal historian event. If one has
-            # already been emitted for this run (e.g. a cancel raced with the
-            # research loop's own cancellation handler), drop the duplicate.
-            return ""
-        return self._emit(
-            event_type,
-            data,
-            subject=subject or run_id,
-            correlation_id=run_id,
-            causation_id=telemetry.started_event_id if telemetry else None,
-            source=source,
-        )
-
-    _TERMINAL_EVENT_TYPES = frozenset({
-        "research.run.completed",
-        "research.run.partial",
-        "research.run.failed",
-        "research.run.canceled",
-    })
-
-    def _is_terminal_event(self, event_type: str) -> bool:
-        return event_type in self._TERMINAL_EVENT_TYPES
-
-    def _mark_terminal_emitted(self, run_id: str) -> bool:
-        """Record that a terminal event is being emitted for a run.
-
-        Returns True if this is the first terminal for the run (caller should
-        emit), or False if a terminal was already emitted (caller should drop
-        the duplicate). Guarded by the telemetry lock so concurrent emit paths
-        for the same run cannot both observe "first".
-        """
-        with self._telemetry_lock:
-            if run_id in self._terminal_emitted:
-                return False
-            self._terminal_emitted.add(run_id)
-            return True
+        return self._telemetry_emitter.emit_run_event(run_id, event_type, data, subject=subject, source=source)
 
     def _sanitize_event_data(self, value: Any) -> Any:
-        secrets = [
-            secret
-            for secret in (
-                self.settings.search_api_key,
-                self.settings.resolver_api_key,
-                self.settings.historian_token,
-            )
-            if secret
-        ]
-        if isinstance(value, str):
-            sanitized = valid_unicode(value)
-            for secret in secrets:
-                sanitized = sanitized.replace(secret, "[REDACTED]")
-            return sanitized
-        if isinstance(value, dict):
-            return {str(key): self._sanitize_event_data(item) for key, item in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [self._sanitize_event_data(item) for item in value]
-        return value
+        return self._telemetry_emitter.sanitize_event_data(value)
 
     def _get_telemetry(self, run_id: str) -> RunTelemetry | None:
-        with self._telemetry_lock:
-            return self._telemetry.get(run_id)
+        return self._telemetry_emitter.get_telemetry(run_id)
 
     def _set_stage(self, run_id: str, stage: str) -> None:
-        telemetry = self._get_telemetry(run_id)
-        if telemetry:
-            telemetry.stage = stage
+        self._telemetry_emitter.set_stage(run_id, stage)
 
     def _stage(self, run_id: str) -> str:
-        telemetry = self._get_telemetry(run_id)
-        return telemetry.stage if telemetry else "research"
+        return self._telemetry_emitter.stage(run_id)
 
     def _select_route(self, run_id: str, route: str, fallback_reason: str | None = None) -> None:
-        telemetry = self._get_telemetry(run_id)
-        if telemetry and telemetry.route == route and fallback_reason is None:
-            return
-        if telemetry:
-            telemetry.route = route
-            telemetry.stage = "route"
-        self._emit_run_event(
-            run_id,
-            "research.route.selected",
-            {
-                "run_id": run_id,
-                "route": route,
-                "fallback_reason": fallback_reason,
-            },
-        )
+        self._telemetry_emitter.select_route(run_id, route, fallback_reason)
 
     def _record_operation_error(
         self, run_id: str, component: str, operation: str | None, exc: Exception
     ) -> None:
-        telemetry = self._get_telemetry(run_id)
-        if telemetry:
-            telemetry.operation_error_recorded = True
-        self._emit_run_event(
-            run_id,
-            "core.operation.error",
-            {
-                "app_id": "magpie",
-                "component": component,
-                "error_type": exc.__class__.__name__,
-                "message": str(exc),
-                "operation": operation,
-                "details": {"run_id": run_id},
-            },
-            source=f"app://magpie/{component}",
-        )
+        self._telemetry_emitter.record_operation_error(run_id, component, operation, exc)
 
     def _record_query_executed(
         self,
@@ -331,22 +200,8 @@ class ResearchService:
         result_count: int,
         elapsed_ms: float,
     ) -> None:
-        telemetry = self._get_telemetry(run_id)
-        if telemetry:
-            telemetry.queries += 1
-        self._emit_run_event(
-            run_id,
-            "research.query.executed",
-            {
-                "run_id": run_id,
-                "query_id": query_id,
-                "normalized_query": query,
-                "provider": self.settings.search_provider,
-                "freshness_class": freshness.value,
-                "result_count": result_count,
-                "duration_ms": elapsed_ms,
-            },
-            subject=query_id,
+        self._telemetry_emitter.record_query_executed(
+            run_id, query_id, query, freshness, result_count, elapsed_ms
         )
 
     def _record_source_discovered(
@@ -356,21 +211,8 @@ class ResearchService:
         result: SearchResultRecord,
         canonical_url: str,
     ) -> None:
-        telemetry = self._get_telemetry(run_id)
-        if telemetry:
-            telemetry.sources_discovered += 1
-        self._emit_run_event(
-            run_id,
-            "research.source.discovered",
-            {
-                "run_id": run_id,
-                "search_result_id": search_result_id,
-                "canonical_url": canonical_url,
-                "title": result.title,
-                "provider": result.provider or self.settings.search_provider,
-                "published_at": result.published_at,
-            },
-            subject=search_result_id or canonical_url,
+        self._telemetry_emitter.record_source_discovered(
+            run_id, search_result_id, result, canonical_url
         )
 
     def _record_source_fetched(
@@ -387,78 +229,25 @@ class ResearchService:
         duration_ms: float,
         fallback_content: bool,
     ) -> None:
-        telemetry = self._get_telemetry(run_id)
-        if telemetry:
-            telemetry.sources_fetched += 1
-        self._emit_run_event(
-            run_id,
-            "research.source.fetched",
-            {
-                "run_id": run_id,
-                "source_id": source_id,
-                "search_result_id": search_result_id,
-                "canonical_url": canonicalize_url(url),
-                "title": title,
-                "provider": provider,
-                "source_kind": source_kind,
-                "published_at": published_at,
-                "duration_ms": duration_ms,
-                "fallback_content": fallback_content,
-            },
-            subject=source_id,
+        self._telemetry_emitter.record_source_fetched(
+            run_id, source_id,
+            search_result_id=search_result_id, url=url, title=title, provider=provider,
+            source_kind=source_kind, published_at=published_at,
+            duration_ms=duration_ms, fallback_content=fallback_content,
         )
 
     def _record_specialized_source(
         self, run_id: str, reference: Any, provider: str, duration_ms: float
     ) -> None:
-        self._record_source_fetched(
-            run_id,
-            reference.source_id,
-            search_result_id=None,
-            url=reference.url,
-            title=reference.title,
-            provider=provider,
-            source_kind=reference.source_kind.value,
-            published_at=reference.published_at,
-            duration_ms=duration_ms,
-            fallback_content=False,
-        )
+        self._telemetry_emitter.record_specialized_source(run_id, reference, provider, duration_ms)
 
     def _record_source_rejected(
         self, run_id: str, source_id: str | None, query: str | None, reason: str
     ) -> None:
-        telemetry = self._get_telemetry(run_id)
-        if telemetry:
-            telemetry.sources_rejected += 1
-        self._emit_run_event(
-            run_id,
-            "research.source.rejected",
-            {
-                "run_id": run_id,
-                "source_id": source_id,
-                "normalized_query": query,
-                "reason": reason,
-            },
-            subject=source_id or run_id,
-        )
+        self._telemetry_emitter.record_source_rejected(run_id, source_id, query, reason)
 
     def _record_cache_hit(self, run_id: str, reference: Any, cache_kind: str) -> None:
-        telemetry = self._get_telemetry(run_id)
-        if telemetry:
-            telemetry.cache_hits += 1
-        self._emit_run_event(
-            run_id,
-            "research.cache.hit",
-            {
-                "run_id": run_id,
-                "source_id": reference.source_id,
-                "canonical_url": canonicalize_url(reference.url),
-                "title": reference.title,
-                "cache_kind": cache_kind,
-                "freshness_class": telemetry.freshness_class.value if telemetry else "evergreen",
-            },
-            subject=reference.source_id,
-        )
+        self._telemetry_emitter.record_cache_hit(run_id, reference, cache_kind)
 
     def _record_run_finished(
         self,
@@ -472,35 +261,10 @@ class ResearchService:
         error_type: str | None = None,
         error_message: str | None = None,
     ) -> None:
-        telemetry = self._get_telemetry(run_id)
-        counters = {
-            "queries": telemetry.queries if telemetry else 0,
-            "sources_discovered": telemetry.sources_discovered if telemetry else 0,
-            "sources_fetched": telemetry.sources_fetched if telemetry else 0,
-            "sources_rejected": telemetry.sources_rejected if telemetry else 0,
-            "cache_hits": telemetry.cache_hits if telemetry else 0,
-            "syntheses": telemetry.syntheses if telemetry else 0,
-        }
-        data: dict[str, Any] = {
-            "run_id": run_id,
-            "status": status,
-            "route": telemetry.route if telemetry else RequestRoute.WEB_RESEARCH.value,
-            "stop_reason": reason.value,
-            "reference_ids": reference_ids or [],
-            "counts": counters,
-            "timings_ms": {
-                key: round(sum(values), 2)
-                for key, values in timings.items()
-            },
-            "duration_ms": round(
-                (perf_counter() - telemetry.started_at) * 1000, 2
-            ) if telemetry else 0.0,
-        }
-        if event_type == "research.run.failed":
-            data["error_type"] = error_type or "ResearchError"
-            data["error_message"] = error_message or ""
-            data["stage"] = telemetry.stage if telemetry else "research"
-        self._emit_run_event(run_id, event_type, data)
+        self._telemetry_emitter.record_run_finished(
+            run_id, event_type, status, reason, timings,
+            reference_ids=reference_ids, error_type=error_type, error_message=error_message,
+        )
 
     def research(
         self, request: ResearchRequest, *, run_id: str | None = None
@@ -524,70 +288,64 @@ class ResearchService:
             subject=run_id,
             correlation_id=run_id,
         )
-        with self._telemetry_lock:
-            self._telemetry[run_id] = RunTelemetry(run_id, perf_counter(), started_event_id, freshness)
+        self._telemetry_emitter.register_run(run_id, started_event_id, freshness)
         budget = RunBudget(
             queries_remaining=self.settings.max_search_queries_per_run,
             sources_remaining=self.settings.max_sources_per_run,
             evidence_remaining=self.settings.max_evidence_items_per_run,
         )
-        evidence: list[EvidenceItem] = []
-        seen_urls: set[str] = set()
-        warnings: list[str] = []
-        limitations: list[str] = []
-        remaining_questions: list[str] = []
-        last_draft: SynthesisDraft | None = None
+        ctx = RunContext(budget=budget)
 
         try:
             self._raise_if_cancelled(run_id)
-            ctx = RouteContext(self)
-            specialized_result = try_specialized_route(ctx, run_id, request, timings, warnings)
+            route_ctx = RouteContext(self)
+            specialized_result = try_specialized_route(route_ctx, run_id, request, timings, ctx.warnings)
             if specialized_result is not None:
                 return self.finalize_specialized_route(
-                    run_id, request, timings, warnings, specialized_result
+                    run_id, request, timings, ctx.warnings, specialized_result
                 )
             self._select_route(run_id, RequestRoute.WEB_RESEARCH.value)
             cached_ids = self.storage.find_fresh_source_ids_for_exact_query(
                 normalize_query(request.question), self._min_fetched_at(freshness)
             )
             if cached_ids:
-                seen_urls.update(self.storage.get_canonical_urls(cached_ids))
+                ctx.seen_urls.update(self.storage.get_canonical_urls(cached_ids))
                 for reference in self.storage.get_source_references(cached_ids):
                     self._record_cache_hit(run_id, reference, "exact_query")
                 with self.storage.transaction():
                     cached_evidence = self._evidence_from_sources(
-                        run_id, cached_ids, request.question, budget, "Reused from exact-query cache"
+                        run_id, cached_ids, request.question, ctx, "Reused from exact-query cache"
                     )
                     if cached_evidence:
-                        evidence.extend(cached_evidence)
-                        last_draft = self._synthesize(run_id, request.question, cached_evidence, last_draft, timings)
-                        remaining_questions = self._remaining_questions_after_quality(
-                            request.question, last_draft, limitations
+                        ctx.evidence.extend(cached_evidence)
+                        ctx.last_draft = self._synthesize(run_id, request.question, cached_evidence, ctx.last_draft, timings)
+                        ctx.remaining_questions = self._remaining_questions_after_quality(
+                            run_id, request, ctx
                         )
-                        if not last_draft.source_answers_question:
+                        if not ctx.last_draft.source_answers_question:
                             for item in cached_evidence:
                                 self.storage.reject_source_for_query(normalize_query(request.question), item.source_id)
                                 self._record_source_rejected(
                                     run_id, item.source_id, normalize_query(request.question),
                                     "source_did_not_answer_question",
                                 )
-                    if not remaining_questions:
-                        return self._finalize(run_id, request, last_draft, StopReason.ANSWERED_FROM_CACHE, timings)
+                    if not ctx.remaining_questions:
+                        return self._finalize(run_id, request, ctx, StopReason.ANSWERED_FROM_CACHE, timings)
 
-            while budget.queries_remaining > 0 and budget.sources_remaining > 0 and budget.evidence_remaining > 0:
+            while ctx.budget.queries_remaining > 0 and ctx.budget.sources_remaining > 0 and ctx.budget.evidence_remaining > 0:
                 self._raise_if_cancelled(run_id)
                 prior_queries = self.storage.list_queries_for_run(run_id)
-                context = PlanningContext(prior_queries, sorted(seen_urls), remaining_questions, budget)
-                proposal, elapsed = self._call_resolver("propose_query", request.question, context)
+                planning = PlanningContext(prior_queries, sorted(ctx.seen_urls), ctx.remaining_questions, ctx.budget)
+                proposal, elapsed = self._call_resolver("propose_query", request.question, planning)
                 self._trace(run_id, "QUERY PROPOSED", [f"query: {proposal.query}", f"elapsed_ms: {elapsed}"])
                 self._record_timing(timings, "resolver.propose_query", elapsed)
                 query = normalize_query(proposal.query)
                 if not query or query in prior_queries:
-                    limitations.append("Planner could not produce a new useful query.")
+                    ctx.limitations.append("Planner could not produce a new useful query.")
                     return self._finish_incomplete(
-                        run_id, request, last_draft, warnings, limitations, StopReason.NO_PROGRESS, timings
+                        run_id, request, ctx, StopReason.NO_PROGRESS, timings
                     )
-                budget.queries_remaining -= 1
+                ctx.budget.queries_remaining -= 1
                 self._set_stage(run_id, "search")
                 results, elapsed = self._search(run_id, proposal.query, freshness)
                 self._raise_if_cancelled(run_id)
@@ -602,34 +360,34 @@ class ResearchService:
                     candidates: list[SearchResultRecord] = []
                     for result in results:
                         canonical = canonicalize_url(result.url)
-                        if canonical not in seen_urls:
-                            seen_urls.add(canonical)
+                        if canonical not in ctx.seen_urls:
+                            ctx.seen_urls.add(canonical)
                             candidates.append(result)
                             self._record_source_discovered(
                                 run_id, result_ids.get(result.url), result, canonical
                             )
                         if len(candidates) >= min(
-                            self.settings.max_sources_per_query, budget.sources_remaining
+                            self.settings.max_sources_per_query, ctx.budget.sources_remaining
                         ):
                             break
                     if not candidates:
-                        limitations.append(f"No new sources found for query: {proposal.query}")
+                        ctx.limitations.append(f"No new sources found for query: {proposal.query}")
                         continue
 
                     round_evidence: list[EvidenceItem] = []
                     for result in candidates:
-                        if budget.evidence_remaining <= 0:
+                        if ctx.budget.evidence_remaining <= 0:
                             break
                         self._raise_if_cancelled(run_id)
-                        budget.sources_remaining -= 1
+                        ctx.budget.sources_remaining -= 1
                         source_id, text, new_warnings, new_limitations, elapsed = self._acquire(
                             run_id, result, result_ids.get(result.url), freshness
                         )
                         self._record_timing(timings, "fetch", elapsed)
-                        warnings.extend(new_warnings)
-                        limitations.extend(new_limitations)
+                        ctx.warnings.extend(new_warnings)
+                        ctx.limitations.extend(new_limitations)
                         item = self._select_evidence(
-                            run_id, source_id, text, request.question, remaining_questions, budget, [],
+                            run_id, source_id, text, request.question, ctx.remaining_questions, ctx.budget, [],
                         )
                         if item:
                             round_evidence.append(item)
@@ -639,25 +397,24 @@ class ResearchService:
                             ])
                     if not round_evidence:
                         continue
-                    evidence.extend(round_evidence)
-                    last_draft = self._synthesize(run_id, request.question, round_evidence, last_draft, timings)
-                    if not last_draft.source_answers_question:
+                    ctx.evidence.extend(round_evidence)
+                    ctx.last_draft = self._synthesize(run_id, request.question, round_evidence, ctx.last_draft, timings)
+                    if not ctx.last_draft.source_answers_question:
                         for item in round_evidence:
                             self.storage.reject_source_for_query(query, item.source_id)
                             self._record_source_rejected(
                                 run_id, item.source_id, query, "source_did_not_answer_question"
                             )
-                    remaining_questions = self._remaining_questions_after_quality(
-                        request.question, last_draft, limitations
+                    ctx.remaining_questions = self._remaining_questions_after_quality(
+                        run_id, request, ctx
                     )
-                    if not remaining_questions:
+                    if not ctx.remaining_questions:
                         return self._finalize(
-                            run_id, request, last_draft, StopReason.NEEDED_NEW_SEARCH,
-                            timings, warnings, limitations,
+                            run_id, request, ctx, StopReason.NEEDED_NEW_SEARCH, timings,
                         )
 
             return self._finish_incomplete(
-                run_id, request, last_draft, warnings, limitations, StopReason.BUDGET_EXHAUSTED, timings
+                run_id, request, ctx, StopReason.BUDGET_EXHAUSTED, timings
             )
         except ResearchCancelled as exc:
             if self.storage.mark_run_cancelled(run_id):
@@ -686,9 +443,7 @@ class ResearchService:
 
     def _clear_run_state(self, run_id: str) -> None:
         """Drop in-memory run state (telemetry, terminal-event guard) after a run ends."""
-        with self._telemetry_lock:
-            self._telemetry.pop(run_id, None)
-            self._terminal_emitted.discard(run_id)
+        self._telemetry_emitter.clear_run(run_id)
 
     def _finish_run_failure(
         self,
@@ -871,10 +626,7 @@ class ResearchService:
             subject=run_id,
             correlation_id=run_id,
         )
-        with self._telemetry_lock:
-            self._telemetry[run_id] = RunTelemetry(
-                run_id, perf_counter(), started_event_id, freshness
-            )
+        self._telemetry_emitter.register_run(run_id, started_event_id, freshness)
 
     def _finalize_fetch_failure(
         self, run_id: str, exc: BaseException, timings: dict[str, list[float]],
@@ -1014,56 +766,25 @@ class ResearchService:
         remaining_questions: list[str], budget: RunBudget, current_evidence: list[EvidenceItem],
         note: str = "Selected relevant extract",
     ) -> EvidenceItem | None:
-        if budget.evidence_remaining <= 0:
-            return None
-        max_chars = self.settings.max_evidence_characters_per_item
-        chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n|(?<=[.!?])\s+", text) if chunk.strip()]
-        terms = set(_TOKEN_PATTERN.findall(" ".join([question, *remaining_questions]).lower()))
-        procedural = self._is_procedural(question)
-        scored: list[tuple[int, int, str]] = []
-        for index, chunk in enumerate(chunks):
-            lowered = chunk.lower()
-            tokens = set(_TOKEN_PATTERN.findall(lowered))
-            score = len(terms & tokens) * 3
-            if procedural:
-                score += sum(3 for signal in ACTIONABLE_SECTION_SIGNALS if signal in lowered)
-                score += sum(2 for signal in IMPERATIVE_SIGNALS if signal in lowered)
-                score += min(4, len(_MEASUREMENT_PATTERN.findall(lowered)))
-            link_count = chunk.count("](")
-            if link_count >= 4:
-                score -= 20
-            if len(chunk) < 40:
-                score -= 2
-            scored.append((score, index, chunk))
-        useful = [item for item in scored if item[0] > 0]
-        candidates = useful or scored
-        selected = sorted(sorted(candidates, key=lambda item: item[0], reverse=True)[:12], key=lambda item: item[1])
-        excerpt = "\n\n".join(chunk for _score, _index, chunk in selected)[:max_chars].strip()
-        if not excerpt:
-            return None
-        source_limit = min(max_chars, self.settings.max_synthesis_input_characters)
-        budget.evidence_remaining -= 1
-        return self.storage.add_evidence_item(run_id, source_id, excerpt[:source_limit], note)
+        # Delegated to EvidenceSelector. Kept as a thin shim so existing
+        # callers (and tests reaching this private method) keep working.
+        return self._evidence.select_evidence(
+            run_id, source_id, text, question, remaining_questions, budget, current_evidence, note
+        )
 
     def _is_procedural(self, question: str) -> bool:
-        lowered = question.lower().strip()
-        return any(signal in lowered for signal in PROCEDURAL_SIGNALS)
+        return self._evidence.is_procedural(question)
 
     def _answer_quality_issue(self, question: str, answer: str) -> str | None:
-        lowered = answer.lower().strip()
-        if not lowered:
-            return f"Find a source that directly answers: {question}"
-        if not self._is_procedural(question):
-            return None
-        step_count = len(re.findall(r"(?m)^\s*(?:\d+[.)]|[-*]\s+)", answer))
-        imperative_count = sum(1 for signal in IMPERATIVE_SIGNALS if signal in lowered)
-        if step_count < 3 and imperative_count < 3:
-            return "Find enough evidence to provide a concrete, ordered set of instructions."
-        return None
+        return self._evidence.answer_quality_issue(question, answer)
 
     def _remaining_questions_after_quality(
-        self, question: str, draft: SynthesisDraft, limitations: list[str]
+        self, run_id: str, request: ResearchRequest, ctx: RunContext
     ) -> list[str]:
+        question = request.question
+        draft = ctx.last_draft
+        if draft is None:
+            return ctx.remaining_questions
         if not draft.source_answers_question:
             if not draft.remaining_questions:
                 draft.remaining_questions = [f"Find a source that directly answers: {question}"]
@@ -1071,22 +792,22 @@ class ResearchService:
         quality_issue = self._answer_quality_issue(question, draft.answer)
         if not draft.remaining_questions and quality_issue:
             draft.remaining_questions = [quality_issue]
-            if quality_issue not in limitations:
-                limitations.append(quality_issue)
+            if quality_issue not in ctx.limitations:
+                ctx.limitations.append(quality_issue)
         return draft.remaining_questions
 
     def _evidence_from_sources(
-        self, run_id: str, source_ids: list[str], question: str, budget: RunBudget, note: str
+        self, run_id: str, source_ids: list[str], question: str, ctx: RunContext, note: str
     ) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
         for source_id in source_ids:
-            if budget.evidence_remaining <= 0:
+            if ctx.budget.evidence_remaining <= 0:
                 break
             text = self.storage.get_extract_text(source_id)
             if not text:
                 continue
             self.storage.link_run_source(run_id, source_id)
-            item = self._select_evidence(run_id, source_id, text, question, [], budget, evidence, note)
+            item = self._select_evidence(run_id, source_id, text, question, [], ctx.budget, evidence, note)
             if item:
                 evidence.append(item)
         return evidence
@@ -1139,12 +860,13 @@ class ResearchService:
         return draft
 
     def _finish_incomplete(
-        self, run_id: str, request: ResearchRequest, draft: SynthesisDraft | None,
-        warnings: list[str], limitations: list[str], reason: StopReason, timings: dict[str, list[float]],
+        self, run_id: str, request: ResearchRequest, ctx: RunContext,
+        reason: StopReason, timings: dict[str, list[float]],
     ) -> ResearchResult | ResearchErrorResult:
+        draft = ctx.last_draft
         if draft and draft.answer and draft.cited_source_ids and not self._answer_quality_issue(request.question, draft.answer):
-            limitations.append("Research stopped before all remaining questions were answered.")
-            return self._finalize(run_id, request, draft, reason, timings, warnings, limitations, status="partial")
+            ctx.limitations.append("Research stopped before all remaining questions were answered.")
+            return self._finalize(run_id, request, ctx, reason, timings, status="partial")
         self.storage.update_run_status(run_id, "failed", StopReason.INSUFFICIENT_EVIDENCE.value)
         message = "The service could not gather enough evidence to answer the question."
         self._record_run_finished(
@@ -1162,10 +884,14 @@ class ResearchService:
         )
 
     def _finalize(
-        self, run_id: str, request: ResearchRequest, draft: SynthesisDraft, reason: StopReason,
-        timings: dict[str, list[float]], warnings: list[str] | None = None,
-        limitations: list[str] | None = None, status: str = "ok",
+        self, run_id: str, request: ResearchRequest, ctx: RunContext, reason: StopReason,
+        timings: dict[str, list[float]], status: str = "ok",
     ) -> ResearchResult:
+        draft = ctx.last_draft
+        if draft is None:
+            # _finalize is only reached after a synthesis produced a draft; a
+            # missing draft here is a programming error rather than a run outcome.
+            raise ResolverError("Cannot finalize a run with no synthesis draft.")
         self._raise_if_cancelled(run_id)
         references = self.storage.get_source_references(draft.cited_source_ids)[: max(0, request.max_references)]
         self._finalize_storage(
@@ -1187,7 +913,7 @@ class ResearchService:
         self._trace(run_id, "COMPLETED", [f"status: {status}", f"stop_reason: {reason.value}"])
         return ResearchResult(
             status, run_id, draft.summary, draft.answer, references,
-            draft.warnings + (warnings or []), draft.limitations + (limitations or []),
+            draft.warnings + ctx.warnings, draft.limitations + ctx.limitations,
             reason, self._build_debug(run_id, request, timings),
         )
 
