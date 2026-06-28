@@ -355,7 +355,7 @@ def to_jsonable(value: Any) -> Any:
     """Convert dataclasses and enums into JSON-safe structures."""
     if isinstance(value, Enum):
         return value.value
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         return {key: to_jsonable(item) for key, item in asdict(value).items()}
     if isinstance(value, dict):
         return {key: to_jsonable(item) for key, item in value.items()}

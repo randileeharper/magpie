@@ -144,7 +144,7 @@ class AniListClient:
             return f"Season year: {media['seasonYear']}" if media.get("seasonYear") else None
         if field in {AnimeField.START_DATE, AnimeField.END_DATE}:
             key = "startDate" if field == AnimeField.START_DATE else "endDate"
-            value = self._format_date(media.get(key))
+            value = self._format_date(media.get(key)) or ""
             label = "Start date" if field == AnimeField.START_DATE else "End date"
             return f"{label}: {value}" if value else None
         if field == AnimeField.GENRES:

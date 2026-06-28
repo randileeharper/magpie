@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import httpx
@@ -32,7 +32,10 @@ from google.protobuf import json_format
 
 from . import __version__
 from .errors import A2ARequestError, A2AUnavailableError
-from .models import ResearchRequest, ResponseDetail, StopReason, to_jsonable
+from .models import (
+    FetchResult, IndexedSearchResult, ResearchErrorResult, ResearchRequest, ResearchResult,
+    ResponseDetail, StopReason, to_jsonable,
+)
 from .service import ResearchService
 
 
@@ -112,6 +115,7 @@ class SDKResearchAgentExecutor(AgentExecutor):
         updater = TaskUpdater(event_queue=event_queue, task_id=context.task_id, context_id=context.context_id)
         await updater.start_work()
         try:
+            result: IndexedSearchResult | FetchResult | ResearchResult | ResearchErrorResult
             if skill == "magpie_search":
                 result = await asyncio.to_thread(
                     self._service.search, question,
@@ -147,9 +151,11 @@ class SDKResearchAgentExecutor(AgentExecutor):
                 name=artifact_name,
             )
             if skill == "magpie_search":
-                text_response = f"Found {len(result.results)} results for: {result.query}"
+                search_result = cast(IndexedSearchResult, result)
+                text_response = f"Found {len(search_result.results)} results for: {search_result.query}"
             elif skill == "magpie_fetch":
-                text_response = f"Fetched {result.url} ({len(result.content)} chars via {result.fetched_via})"
+                fetch_result = cast(FetchResult, result)
+                text_response = f"Fetched {fetch_result.url} ({len(fetch_result.content)} chars via {fetch_result.fetched_via})"
             else:
                 text_response = (
                     getattr(result, "answer", "")
@@ -164,12 +170,14 @@ class SDKResearchAgentExecutor(AgentExecutor):
             )
             if skill in {"magpie_search", "magpie_fetch"}:
                 await updater.complete(message)
-            elif result.stop_reason == StopReason.CANCELLED:
-                await updater.update_status(TaskState.TASK_STATE_CANCELED, message)
-            elif result.status in {"ok", "partial"}:
-                await updater.complete(message)
             else:
-                await updater.failed(message)
+                research_result = cast(ResearchResult | ResearchErrorResult, result)
+                if research_result.stop_reason == StopReason.CANCELLED:
+                    await updater.update_status(TaskState.TASK_STATE_CANCELED, message)
+                elif research_result.status in {"ok", "partial"}:
+                    await updater.complete(message)
+                else:
+                    await updater.failed(message)
         except Exception as exc:  # noqa: BLE001
             await updater.failed(self._failure_message(context, exc))
 

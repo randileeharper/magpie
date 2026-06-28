@@ -38,7 +38,7 @@ LOGGER = logging.getLogger(__name__)
 # than an internal bug. `httpx.HTTPError` is included because the resolver
 # adapter intentionally re-raises network errors (e.g. timeouts) from
 # `_ask_json`; those are provider failures, not programming bugs.
-_DOMAIN_RUN_ERRORS: tuple[type[BaseException], ...] = (
+_DOMAIN_RUN_ERRORS: tuple[type[Exception], ...] = (
     ResolverError, SearchError, FetchError, StorageError, httpx.HTTPError,
 )
 
@@ -323,10 +323,10 @@ class ResearchService:
                             run_id, request, ctx
                         )
                         if not ctx.last_draft.source_answers_question:
-                            for item in cached_evidence:
-                                self.storage.reject_source_for_query(normalize_query(request.question), item.source_id)
+                            for cached_item in cached_evidence:
+                                self.storage.reject_source_for_query(normalize_query(request.question), cached_item.source_id)
                                 self._record_source_rejected(
-                                    run_id, item.source_id, normalize_query(request.question),
+                                    run_id, cached_item.source_id, normalize_query(request.question),
                                     "source_did_not_answer_question",
                                 )
                     if not ctx.remaining_questions:
@@ -386,7 +386,7 @@ class ResearchService:
                         self._record_timing(timings, "fetch", elapsed)
                         ctx.warnings.extend(new_warnings)
                         ctx.limitations.extend(new_limitations)
-                        item = self._select_evidence(
+                        item: EvidenceItem | None = self._select_evidence(
                             run_id, source_id, text, request.question, ctx.remaining_questions, ctx.budget, [],
                         )
                         if item:
@@ -450,7 +450,7 @@ class ResearchService:
         run_id: str,
         request: ResearchRequest,
         timings: dict[str, list[float]],
-        exc: BaseException,
+        exc: Exception,
         reason: StopReason,
     ) -> ResearchErrorResult:
         """Finalize a failed run and return its error result.
@@ -513,7 +513,7 @@ class ResearchService:
                         warnings.append(f"No content extracted for {result.url}")
                         continue
                     budget.sources_remaining -= 1
-                    source_id = self.storage.upsert_source(
+                    self.storage.upsert_source(
                         run_id, result.url, result.title, result.site_name, result.published_at, content,
                         {"provider_result": result.raw_result, "provider": result.provider},
                         SourceKind.SEARCH_RESULT_FALLBACK, result_ids.get(result.url), None,
@@ -554,7 +554,6 @@ class ResearchService:
                 return stored
             if stored and full:
                 url = stored.url
-                title = stored.title
             else:
                 raise ResolverError(f"No source found at index {index} for run {run_id}.")
         if not url:
@@ -658,7 +657,7 @@ class ResearchService:
             title=row["title"], content=row["text"], fetched_via="stored",
         )
 
-    def _call_resolver(self, method: str, *args: object) -> tuple[object, float]:
+    def _call_resolver(self, method: str, *args: object) -> tuple[Any, float]:
         started = perf_counter()
         with self._resolver_semaphore:
             result = getattr(self.resolver, method)(*args)

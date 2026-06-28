@@ -6,10 +6,10 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from .a2a import LocalA2AClient, build_fastapi_app
-from .app import build_app
+from .app import AppContext, build_app
 from .config import Settings
 from .doctor import run_doctor
 from .errors import A2ARequestError, A2AUnavailableError, ConfigError, StorageError
@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _human_output(payload: dict[str, object]) -> str:
+def _human_output(payload: dict[str, Any]) -> str:
     if payload.get("status") == "error":
         return f"error: {payload.get('message')}\nrun_id: {payload.get('run_id')}"
     summary = str(payload.get("summary", ""))
@@ -71,7 +71,7 @@ def _human_output(payload: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def _search_output(payload: dict[str, object]) -> str:
+def _search_output(payload: dict[str, Any]) -> str:
     lines = [
         f"run_id: {payload.get('run_id')}",
         f"query: {payload.get('query')}",
@@ -97,7 +97,7 @@ def _search_output(payload: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def _fetch_output(payload: dict[str, object]) -> str:
+def _fetch_output(payload: dict[str, Any]) -> str:
     lines = [
         f"run_id: {payload.get('run_id')}",
         f"url: {payload.get('url')}",
@@ -111,7 +111,7 @@ def _fetch_output(payload: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def _clear_cache_payload(settings: Settings) -> tuple[dict[str, object], int]:
+def _clear_cache_payload(settings: Settings) -> tuple[dict[str, Any], int]:
     database_path = settings.expanded_database_path
     existing = [path for suffix in ("", "-wal", "-shm") if (path := Path(str(database_path) + suffix)).exists()]
     if existing:
@@ -149,13 +149,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return exit_code
 
-    app = None
+    app: AppContext | None = None
     try:
         if args.command in {"serve", "doctor"}:
             app = build_app(args.config_path, truncate_debug_logs=(args.command == "serve"))
         if args.command == "serve":
             import uvicorn
 
+            assert app is not None
             host = args.host or app.settings.http_host
             port = args.port or app.settings.http_port
             server_app = build_fastapi_app(app.service, app.settings.a2a_base_url)
@@ -163,6 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "doctor":
+            assert app is not None
             payload = run_doctor(app.settings, app.search_client, app.fetcher, app.news_client, live=args.live)
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0 if payload.get("status") == "ok" else 2
@@ -191,7 +193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _app = _build_app(args.config_path)
                 target = args.target
                 is_url = target.startswith("http://") or target.startswith("https://")
-                fetch_kwargs: dict[str, object] = {}
+                fetch_kwargs: dict[str, Any] = {}
                 if is_url:
                     fetch_kwargs["url"] = target
                 else:
@@ -200,8 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         fetch_kwargs["run_id"] = args.run_id
                 if args.full:
                     fetch_kwargs["full"] = True
-                result = _app.service.fetch(**fetch_kwargs)
-                payload = to_jsonable(result)
+                payload = to_jsonable(_app.service.fetch(**fetch_kwargs))
                 _app.service.close()
                 _app.storage.close()
             except Exception as exc:
