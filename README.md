@@ -39,14 +39,43 @@ and an OpenAI-compatible resolver at `http://localhost:11434/v1`.
 
 ## Install
 
+**For users (recommended):**
+
 ```bash
-uv sync
-uv run crawl4ai-setup
-cp config.example.json config.json
+uv tool install git+https://github.com/randileeharper/magpie
+magpie config init
 ```
 
-Edit `config.json` to select the resolver model and any provider credentials,
-then check the environment:
+Then edit `~/.config/magpie/config.json` for your resolver model, search API
+key, and any provider credentials. See
+[docs/configuration.md](docs/configuration.md).
+
+Crawl4AI and its browser assets are required for page fetching. They are
+installed as a dependency of the tool; run `magpie doctor` to check readiness,
+and follow its guidance if browser setup is needed. (The `crawl4ai-setup`
+command runs inside the tool's own environment; for a tool-installed Magpie,
+use `magpie doctor` rather than `uv run crawl4ai-setup`, which targets a
+project environment that a non-clone user does not have.)
+
+To update, run `uv tool install --force git+https://github.com/randileeharper/magpie`
+(reinstall to pull latest), or reinstall pinned to a release tag. Note that
+`uv tool upgrade magpie` does not work for git-based installs — it only
+upgrades tools installed by name from PyPI.
+
+**For developers:**
+
+```bash
+git clone https://github.com/randileeharper/magpie.git
+cd magpie
+uv sync --locked
+cp magpie/config.example.json config.json   # or: magpie config init
+```
+
+See [docs/development.md](docs/development.md) for the local workflow. Magpie
+defines dev dependencies under `[dependency-groups]`, which `uv sync` includes
+by default — no `--extra` flag is needed. `--locked` matches the CI convention.
+
+Then check the environment:
 
 ```bash
 uv run magpie doctor --live
@@ -101,6 +130,7 @@ uv run magpie fetch 2 --run-id <run_id> --full
 ```bash
 uv run magpie doctor --live
 uv run magpie clear-cache
+uv run magpie config init
 ```
 
 `magpie ask` first tries the configured local A2A server. If initial A2A

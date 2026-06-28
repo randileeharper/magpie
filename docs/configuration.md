@@ -2,7 +2,8 @@
 
 Magpie is configured through a JSON config file, with every setting also
 supporting an environment-variable override using the `MAGPIE_` prefix. The
-example schema lives in `config.example.json` at the repository root.
+example schema lives in `magpie/config.example.json` in the repository, and
+can be written to the standard config location with `magpie config init`.
 
 ## Config Resolution Order
 
@@ -39,7 +40,7 @@ Common settings:
 
 ## Setting Reference
 
-The groups below mirror `config.example.json`. Validation constraints noted
+The groups below mirror `magpie/config.example.json`. Validation constraints noted
 where relevant.
 
 ### HTTP Server

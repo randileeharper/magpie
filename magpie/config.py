@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field, fields
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,45 @@ DEFAULT_CONFIG_CANDIDATES = (
     Path("config.json"),
     Path("~/.config/magpie/config.json"),
 )
+
+#: Filename of the packaged template, relative to the ``magpie`` package.
+CONFIG_TEMPLATE_NAME = "config.example.json"
+
+
+def default_config_path() -> Path:
+    """Return the config path Magpie loads by default for installed users.
+
+    This is the last candidate in the lookup order (the XDG-style path), not
+    ``./config.json``. ``magpie config init`` writes here so it lands at the
+    standard location a non-clone user will load from. If the user relies on
+    ``--config`` to point elsewhere, they should pass ``--path`` to match
+    that location.
+    """
+    return DEFAULT_CONFIG_CANDIDATES[-1].expanduser()
+
+
+def write_default_config(target: Path | None = None, *, force: bool = False) -> Path:
+    """Write the packaged template config to *target* (default: XDG path).
+
+    Returns the path written. Refuses to overwrite an existing file unless
+    *force* is True.
+    """
+    if target is None:
+        target = default_config_path()
+    target = Path(target).expanduser()
+    if target.is_file() and not force:
+        raise ConfigError(f"Config file already exists: {target}. Use --force to overwrite.")
+    try:
+        template = files("magpie").joinpath(CONFIG_TEMPLATE_NAME).read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise ConfigError(
+            f"Packaged config template not found: {CONFIG_TEMPLATE_NAME}. "
+            "Your Magpie installation may be incomplete; reinstall with "
+            "'uv tool install --force git+https://github.com/randileeharper/magpie'."
+        ) from exc
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(template, encoding="utf-8")
+    return target
 
 
 def _env_name(field_name: str) -> str:

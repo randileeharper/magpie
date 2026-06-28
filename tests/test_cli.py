@@ -344,6 +344,42 @@ class CLITests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["deleted"], False)
 
+    def test_config_init_writes_default_config(self) -> None:
+        from importlib.resources import files
+
+        expected = files("magpie").joinpath("config.example.json").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "config.json"
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = cli.main(["config", "init", "--path", str(target)])
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(target.exists())
+            self.assertEqual(target.read_text(encoding="utf-8"), expected)
+            self.assertIn("Wrote config", stdout.getvalue())
+
+    def test_config_init_refuses_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "config.json"
+            target.write_text("existing", encoding="utf-8")
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                exit_code = cli.main(["config", "init", "--path", str(target)])
+            self.assertEqual(exit_code, 2)
+            self.assertIn("--force", stderr.getvalue())
+            self.assertEqual(target.read_text(encoding="utf-8"), "existing")
+
+    def test_config_init_force_overwrites(self) -> None:
+        from importlib.resources import files
+
+        expected = files("magpie").joinpath("config.example.json").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "config.json"
+            target.write_text("existing", encoding="utf-8")
+            exit_code = cli.main(["config", "init", "--path", str(target), "--force"])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(target.read_text(encoding="utf-8"), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

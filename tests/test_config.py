@@ -4,9 +4,10 @@ import json
 import os
 import tempfile
 import unittest
+from importlib.resources import files
 from pathlib import Path
 
-from magpie.config import Settings
+from magpie.config import Settings, default_config_path, write_default_config
 from magpie.errors import ConfigError
 from magpie.models import ResponseDetail
 
@@ -161,6 +162,44 @@ class SettingsTests(unittest.TestCase):
             Settings(cache_recent_ttl_seconds=-1).validate()
         with self.assertRaisesRegex(ConfigError, "cache_evergreen_ttl_seconds"):
             Settings(cache_evergreen_ttl_seconds=-1).validate()
+
+    def test_write_default_config_writes_template(self) -> None:
+        expected = files("magpie").joinpath("config.example.json").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "config.json"
+            written = write_default_config(target)
+            self.assertEqual(written, target)
+            self.assertTrue(target.exists())
+            self.assertEqual(target.read_text(encoding="utf-8"), expected)
+
+    def test_write_default_config_refuses_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "config.json"
+            target.write_text("existing", encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "--force"):
+                write_default_config(target)
+            self.assertEqual(target.read_text(encoding="utf-8"), "existing")
+
+    def test_write_default_config_force_overwrites(self) -> None:
+        expected = files("magpie").joinpath("config.example.json").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "config.json"
+            target.write_text("existing", encoding="utf-8")
+            written = write_default_config(target, force=True)
+            self.assertEqual(written, target)
+            self.assertEqual(target.read_text(encoding="utf-8"), expected)
+
+    def test_write_default_config_creates_parent_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "nested" / "dir" / "config.json"
+            write_default_config(target)
+            self.assertTrue(target.exists())
+
+    def test_default_config_path_returns_xdg_candidate(self) -> None:
+        self.assertEqual(
+            default_config_path(),
+            Path("~/.config/magpie/config.json").expanduser(),
+        )
 
 
 if __name__ == "__main__":

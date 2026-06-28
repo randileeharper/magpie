@@ -33,6 +33,7 @@ packages = ["magpie"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "magpie/news_feeds.json" = "magpie/news_feeds.json"
+"magpie/config.example.json" = "magpie/config.example.json"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

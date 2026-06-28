@@ -49,6 +49,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     clear_cache = subparsers.add_parser("clear-cache", help="Delete the configured cache database.")
     clear_cache.add_argument("--json", action="store_true", dest="as_json")
+
+    config = subparsers.add_parser("config", help="Manage Magpie configuration.")
+    config_subparsers = config.add_subparsers(dest="config_command", required=True)
+    config_init = config_subparsers.add_parser("init", help="Write the default config file.")
+    config_init.add_argument(
+        "--path",
+        type=Path,
+        default=None,
+        help="Config file path (default: ~/.config/magpie/config.json)",
+    )
+    config_init.add_argument("--force", action="store_true", help="Overwrite an existing config file.")
     return parser
 
 
@@ -148,6 +159,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(json.dumps(payload, indent=2, sort_keys=True))
         return exit_code
+
+    if args.command == "config" and args.config_command == "init":
+        from .config import write_default_config
+
+        try:
+            path = write_default_config(args.path, force=args.force)
+        except (ConfigError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"Wrote config to {path}")
+        return 0
 
     app: AppContext | None = None
     try:
