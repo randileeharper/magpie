@@ -2,11 +2,11 @@
 
 ## Python environment
 
-Use the project virtualenv for all Python commands:
+Use `uv` to manage the environment and run all Python commands:
 
 ```sh
-.venv/bin/python -m pytest
-.venv/bin/python -m compileall magpie tests
+uv run pytest
+uv run python -m compileall magpie tests
 ```
 
 Do not use system `python`, `pytest`, or package commands unless explicitly asked.
@@ -16,13 +16,13 @@ Do not use system `python`, `pytest`, or package commands unless explicitly aske
 Preferred full verification:
 
 ```sh
-.venv/bin/python -m pytest -q
+uv run pytest -q
 ```
 
 For focused checks:
 
 ```sh
-.venv/bin/python -m pytest tests/test_service.py -q
+uv run pytest tests/test_service.py -q
 ```
 
 ## GitHub issue/PR workflow
@@ -39,7 +39,7 @@ For issue work:
 
 1. Create a dedicated branch before editing.
 2. Keep unrelated local files out of commits, especially untracked scratch directories like `tmp/`.
-3. Verify with `.venv/bin/python` commands before opening a PR.
+3. Verify with `uv run` commands before opening a PR.
 4. In the PR body, include a concise summary and exact test commands run.
 5. After merge, switch back to `main`, fetch/prune the remote, fast-forward local `main`, and delete the local feature branch.
 

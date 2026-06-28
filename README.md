@@ -40,10 +40,8 @@ and an OpenAI-compatible resolver at `http://localhost:11434/v1`.
 ## Install
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev]
-crawl4ai-setup
+uv sync
+uv run crawl4ai-setup
 cp config.example.json config.json
 ```
 
@@ -51,7 +49,7 @@ Edit `config.json` to select the resolver model and any provider credentials,
 then check the environment:
 
 ```bash
-magpie doctor --live
+uv run magpie doctor --live
 ```
 
 ## Usage
@@ -59,7 +57,7 @@ magpie doctor --live
 Start the A2A server:
 
 ```bash
-magpie serve
+uv run magpie serve
 ```
 
 ### Ask
@@ -68,15 +66,15 @@ Synthesizes a short grounded answer from search. Routes to specialized APIs
 when the question matches weather, anime, or news.
 
 ```bash
-magpie ask "Who is the mayor of New York?"
-magpie ask "How do I make homemade sourdough bread?"
-magpie ask "What's the weather in 98230?"
-magpie ask "Give me the forecast for 98230" --json
-magpie ask "Who voices Kirishima in Yakuza Fiancé?"
-magpie ask "anime schedule for today"
-magpie ask "What's the latest AI news?"
-magpie ask "world news from yesterday" --json
-magpie ask "Compare the latest policies" --json --debug
+uv run magpie ask "Who is the mayor of New York?"
+uv run magpie ask "How do I make homemade sourdough bread?"
+uv run magpie ask "What's the weather in 98230?"
+uv run magpie ask "Give me the forecast for 98230" --json
+uv run magpie ask "Who voices Kirishima in Yakuza Fiancé?"
+uv run magpie ask "anime schedule for today"
+uv run magpie ask "What's the latest AI news?"
+uv run magpie ask "world news from yesterday" --json
+uv run magpie ask "Compare the latest policies" --json --debug
 ```
 
 ### Search
@@ -84,8 +82,8 @@ magpie ask "Compare the latest policies" --json --debug
 Indexed search results with summaries and source URLs. No synthesis.
 
 ```bash
-magpie search "a2a protocol"
-magpie search "rust borrow checker" --max-results 3 --json
+uv run magpie search "a2a protocol"
+uv run magpie search "rust borrow checker" --max-results 3 --json
 ```
 
 ### Fetch
@@ -93,16 +91,16 @@ magpie search "rust borrow checker" --max-results 3 --json
 Full page content by index (from a prior search) or by URL.
 
 ```bash
-magpie fetch 0 --run-id <run_id_from_search>
-magpie fetch "https://example.com/article"
-magpie fetch 2 --run-id <run_id> --full
+uv run magpie fetch 0 --run-id <run_id_from_search>
+uv run magpie fetch "https://example.com/article"
+uv run magpie fetch 2 --run-id <run_id> --full
 ```
 
 ### Other commands
 
 ```bash
-magpie doctor --live
-magpie clear-cache
+uv run magpie doctor --live
+uv run magpie clear-cache
 ```
 
 `magpie ask` first tries the configured local A2A server. If initial A2A

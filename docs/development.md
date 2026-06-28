@@ -34,9 +34,9 @@ The test suite uses Python's `unittest` and is also runnable under `pytest`.
 Tests use the `fake` provider backends to avoid network calls.
 
 ```bash
-python -m unittest discover -s tests -v
-# or, when pytest is installed
-pytest
+uv run python -m unittest discover -s tests -v
+# or
+uv run pytest
 ```
 
 Test modules:

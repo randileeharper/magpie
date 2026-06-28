@@ -13,21 +13,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
         with:
-          python-version: "3.12"
+          enable-cache: true
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+        run: uv sync --locked
 
       - name: Ruff
-        run: ruff check magpie tests
+        run: uv run ruff check magpie tests
 
       - name: Mypy
-        run: mypy magpie
+        run: uv run mypy magpie
 
       - name: Pytest
-        run: pytest -q
+        run: uv run pytest -q
