@@ -335,6 +335,37 @@ class OpenAICompatibleResolverTests(unittest.TestCase):
             f"Expected a warning about control artifacts, got: {log_records.output}",
         )
 
+    def test_synthesize_does_not_retry_for_inline_markdown_fence(self) -> None:
+        # Regression test for #60: a legitimate synthesis answer that contains
+        # an inline Markdown code block must NOT be treated as a control
+        # artifact and must NOT trigger a retry. Whole-payload fences are
+        # already stripped by _strip_code_fence(); fences inside parsed
+        # values are legitimate answer content.
+        call_count = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            content = (
+                '{"summary":"short","answer":"Here is an example:\\n```python\\n'
+                'print(\\"hello\\")\\n```\\nDone.",'
+                '"cited_source_ids":["source-1"],'
+                '"remaining_questions":[],"source_answers_question":true}'
+            )
+            return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+        evidence = [EvidenceItem(evidence_id="e-1", source_id="source-1", excerpt="fact", note="note")]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(tmpdir),
+                transport=httpx.MockTransport(handler),
+            )
+            draft = client.synthesize("question", evidence)
+
+        # Only one call should occur: the inline fences are not control artifacts.
+        self.assertEqual(call_count, 1)
+        self.assertIn("```python", draft.answer)
+
     def test_propose_query_uses_state_aware_user_message(self) -> None:
         captured_payloads: list[dict[str, object]] = []
 

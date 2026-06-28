@@ -595,8 +595,8 @@ class OpenAICompatibleResolverClient:
 
         Local models frequently emit JSON wrapped in ```` ```json ```` fences.
         Only a fence enclosing the *entire* payload is stripped here; fences
-        appearing *inside* parsed values are still treated as control artifacts
-        by ``_payload_contains_control_artifacts`` and trigger a retry.
+        appearing *inside* parsed values are legitimate answer content and are
+        not treated as control artifacts by ``_payload_contains_control_artifacts``.
         """
         match = self._CODE_FENCE_RE.match(content)
         if match:
@@ -611,7 +611,13 @@ class OpenAICompatibleResolverClient:
         return any(trailing.startswith(prefix) for prefix in ignorable_prefixes)
 
     def _payload_contains_control_artifacts(self, value: Any) -> bool:
-        markers = ("<channel|>", "<|tool_response>", "```json", "```")
+        # Markdown code fences (```json / ```) are intentionally NOT treated as
+        # control artifacts: a fence wrapping the whole payload is already
+        # stripped by _strip_code_fence() before parsing, and fences appearing
+        # inside parsed string values are legitimate answer content (e.g. a
+        # synthesis answer that quotes a code block). Only model-specific
+        # control tokens that indicate leaked control output are detected.
+        markers = ("<channel|>", "<|tool_response>")
         if isinstance(value, str):
             return any(marker in value for marker in markers)
         if isinstance(value, list):
