@@ -3,6 +3,7 @@ name = "magpie"
 version = "0.1.0"
 description = "Bounded web-research worker with A2A and CLI entrypoints."
 readme = "README.md"
+license = "BSD-2-Clause"
 requires-python = ">=3.12"
 dependencies = [
   "a2a-sdk[fastapi]>=1.0.0",
