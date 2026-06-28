@@ -14,7 +14,16 @@ from ..models import FetchedSource, SourceKind
 
 
 class _LoopWorker:
-    """Keep a long-lived event loop alive for Crawl4AI subprocess resources."""
+    """Keep a long-lived event loop alive for Crawl4AI subprocess resources.
+
+    A process-wide singleton so that repeated ``Crawl4AIFetcher`` constructions
+    (e.g. repeated ``build_app()`` calls in tests or hot-reloads in a long-lived
+    worker) share one daemon thread + event loop instead of accumulating one
+    per instance. Use :meth:`shared` to obtain the singleton.
+    """
+
+    _singleton: _LoopWorker | None = None
+    _singleton_lock = threading.Lock()
 
     def __init__(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -38,6 +47,15 @@ class _LoopWorker:
         if not self._loop.is_closed():
             self._loop.close()
 
+    @classmethod
+    def shared(cls) -> _LoopWorker:
+        """Return the process-wide loop worker, creating it once if needed."""
+        if cls._singleton is None:
+            with cls._singleton_lock:
+                if cls._singleton is None:
+                    cls._singleton = cls()
+        return cls._singleton
+
 
 @dataclass(slots=True)
 class Crawl4AIFetcher:
@@ -49,7 +67,7 @@ class Crawl4AIFetcher:
     def fetch(self, url: str) -> FetchedSource:
         try:
             if self._worker is None:
-                self._worker = _LoopWorker()
+                self._worker = _LoopWorker.shared()
             return self._worker.run(self._fetch_async(url))
         except DependencyError:
             raise

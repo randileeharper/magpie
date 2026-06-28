@@ -20,6 +20,7 @@ from magpie.providers.base import AnimeClient
 from magpie.providers.exa import ExaSearchClient
 from magpie.providers.neonhail import NeonHailWeatherClient
 from magpie.providers.news_rss import NewsRSSClient
+from magpie.providers.crawl4ai_fetcher import Crawl4AIFetcher, _LoopWorker
 
 
 class ExaProviderTests(unittest.TestCase):
@@ -560,6 +561,76 @@ class NewsRSSProviderTests(unittest.TestCase):
 
             # The mutable instance attribute that caused the race must be gone.
             self.assertFalse(hasattr(client, "_request_tz"))
+
+
+class Crawl4AIFetcherTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Reset the process-wide singleton so each test starts clean and does
+        # not observe a worker left over by an earlier test or import.
+        _LoopWorker._singleton = None
+
+    def tearDown(self) -> None:
+        worker = _LoopWorker._singleton
+        if worker is not None:
+            worker.close()
+        _LoopWorker._singleton = None
+
+    def _settings(self, tmpdir: str, **overrides: object) -> Settings:
+        data: dict[str, object] = {
+            "database_path": str(Path(tmpdir) / "magpie.db"),
+            "search_provider": "fake",
+            "fetch_provider": "crawl4ai",
+            "resolver_backend": "fake",
+        }
+        data.update(overrides)
+        path = Path(tmpdir) / "config.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return Settings.load(str(path))
+
+    def test_loop_worker_is_a_process_wide_singleton(self) -> None:
+        # Regression test for #57: repeated Crawl4AIFetcher constructions must
+        # not each spawn their own daemon thread + event loop. All fetchers
+        # share one _LoopWorker singleton.
+        before = threading.active_count()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(tmpdir)
+            fetchers = [Crawl4AIFetcher(settings=settings) for _ in range(3)]
+
+            # Each fetcher lazily acquires the shared worker.
+            for fetcher in fetchers:
+                fetcher._worker = _LoopWorker.shared()
+
+        self.assertIsNotNone(fetchers[0]._worker)
+        # All three fetchers must reference the same worker instance.
+        self.assertIs(fetchers[0]._worker, fetchers[1]._worker)
+        self.assertIs(fetchers[0]._worker, fetchers[2]._worker)
+        # And it is the singleton itself.
+        self.assertIs(fetchers[0]._worker, _LoopWorker._singleton)
+        # Three fetchers must produce exactly one extra (daemon) thread, not three.
+        self.assertEqual(threading.active_count() - before, 1)
+
+    def test_shared_is_thread_safe_under_concurrent_construction(self) -> None:
+        # Concurrent first-call races must still yield exactly one singleton.
+        results: list[_LoopWorker] = []
+        errors: list[BaseException] = []
+
+        def grab() -> None:
+            try:
+                results.append(_LoopWorker.shared())
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=grab) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertFalse(errors, f"concurrent shared() failed: {errors}")
+        self.assertEqual(len(results), 8)
+        # Every result is the same instance.
+        self.assertTrue(all(r is results[0] for r in results))
+        self.assertIs(_LoopWorker._singleton, results[0])
 
 
 if __name__ == "__main__":
