@@ -592,7 +592,7 @@ class ResearchService:
             ])
             return FetchResult(
                 run_id=fetch_run_id, index=index, url=fetched.url,
-                title=fetched.title, content=content, fetched_via="crawl4ai", warnings=warnings,
+                title=fetched.title, content=content, fetched_via=fetched.retrieved_via, warnings=warnings,
             )
         except FetchError as exc:
             if owns_run:
