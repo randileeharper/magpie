@@ -336,19 +336,6 @@ class NewsRSSClient:
                 continue
             selected.append(item)
             per_source[item.source_name] = count + 1
-        if len(selected) < max_items:
-            used_urls = {canonicalize_url(item.url) for item in selected}
-            for item in deduped:
-                if len(selected) >= max_items:
-                    break
-                if canonicalize_url(item.url) in used_urls:
-                    continue
-                count = per_source.get(item.source_name, 0)
-                if count >= self.settings.news_per_source_limit:
-                    continue
-                selected.append(item)
-                used_urls.add(canonicalize_url(item.url))
-                per_source[item.source_name] = count + 1
         return selected
 
     def _time_window(self, scope: NewsTimeScope) -> tuple[datetime, datetime]:
