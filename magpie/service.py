@@ -480,6 +480,7 @@ class ResearchService:
         freshness = detect_freshness_class(query)
         run_id = self.storage.create_run(query, None, freshness, ResponseDetail.COMPACT.value, run_id=run_id)
         self._begin_logs(run_id, query)
+        self._start_run(run_id, query, None, freshness, ResponseDetail.COMPACT)
         self._select_route(run_id, RequestRoute.WEB_RESEARCH.value)
         warnings: list[str] = []
         timings: dict[str, list[float]] = {}
@@ -497,6 +498,7 @@ class ResearchService:
             self._set_stage(run_id, "search")
             results, elapsed = self._search(run_id, proposal.query, freshness)
             self._record_timing(timings, "search", elapsed)
+            source_ids: list[str] = []
             with self.storage.transaction():
                 query_id = self.storage.add_query(run_id, normalized, self.settings.search_provider, freshness)
                 result_ids = self.storage.add_search_results(query_id, [to_jsonable(r) for r in results])
@@ -513,10 +515,11 @@ class ResearchService:
                         warnings.append(f"No content extracted for {result.url}")
                         continue
                     budget.sources_remaining -= 1
+                    source_id = result_ids.get(result.url)
                     self.storage.upsert_source(
                         run_id, result.url, result.title, result.site_name, result.published_at, content,
                         {"provider_result": result.raw_result, "provider": result.provider},
-                        SourceKind.SEARCH_RESULT_FALLBACK, result_ids.get(result.url), None,
+                        SourceKind.SEARCH_RESULT_FALLBACK, source_id, None,
                     )
                     summary = result.snippet or content[:500]
                     items.append(IndexedSearchResultItem(
@@ -527,21 +530,43 @@ class ResearchService:
                         published_at=result.published_at,
                         summary=summary,
                     ))
+                    if source_id:
+                        source_ids.append(source_id)
                 self.storage.update_run_status(run_id, "completed", StopReason.NEEDED_NEW_SEARCH.value)
+                self._record_run_finished(
+                    run_id, "research.run.completed", "ok", StopReason.NEEDED_NEW_SEARCH, timings,
+                    reference_ids=source_ids,
+                )
                 self._trace(run_id, "SEARCH COMPLETED", [f"result_count: {len(items)}"])
                 return IndexedSearchResult(run_id=run_id, query=proposal.query, results=items, warnings=warnings)
         except _DOMAIN_RUN_ERRORS as exc:
-            self.storage.update_run_status(run_id, "failed", StopReason.FAILED.value)
-            self.storage.append_event(run_id, "run_failed", {"error": str(exc)})
+            self._finalize_search_failure(run_id, exc, timings, StopReason.FAILED)
             raise
         except Exception as exc:  # noqa: BLE001
             # Unexpected (non-domain) failure: finalize as an internal error so it
             # is distinguishable from provider failures, then re-raise to keep
             # search()'s "raise on failure" contract intact for callers.
             LOGGER.exception("Internal error during search run %s", run_id)
-            self.storage.update_run_status(run_id, "failed", StopReason.INTERNAL_ERROR.value)
-            self.storage.append_event(run_id, "run_failed", {"error": str(exc)})
+            self._finalize_search_failure(run_id, exc, timings, StopReason.INTERNAL_ERROR)
             raise
+        finally:
+            self._clear_run_state(run_id)
+
+    def _finalize_search_failure(
+        self, run_id: str, exc: BaseException, timings: dict[str, list[float]], reason: StopReason,
+    ) -> None:
+        """Mark a search run failed and emit the ``research.run.failed`` terminal.
+
+        Mirrors ``_finalize_fetch_failure``: update run status, append a
+        failure event, and emit the terminal lifecycle event so historian
+        consumers see a run-start/run-complete pair for search-only runs.
+        """
+        self.storage.update_run_status(run_id, "failed", reason.value)
+        self.storage.append_event(run_id, "run_failed", {"error": str(exc)})
+        self._record_run_finished(
+            run_id, "research.run.failed", "error", reason, timings,
+            error_type=exc.__class__.__name__, error_message=str(exc),
+        )
 
     def fetch(
         self, *, run_id: str | None = None, index: int | None = None,

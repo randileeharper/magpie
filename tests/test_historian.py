@@ -267,6 +267,61 @@ class HistorianServiceTests(unittest.TestCase):
         )
         _validate_manifest_events(sink.events)
 
+    def test_search_run_emits_started_and_completed_lifecycle_events(self) -> None:
+        # Regression test for #56: search() must emit the same run lifecycle
+        # as research()/fetch() -- a research.run.started event, exactly one
+        # terminal (research.run.completed), and a shared correlation_id.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sink = FakeHistorianSink()
+            service = _service(tmpdir, sink)
+            result = service.search("who is the mayor of new york")
+
+        event_types = [event["type"] for event in sink.events]
+        self.assertIn("research.run.started", event_types)
+        self.assertEqual(event_types.count("research.run.completed"), 1)
+        self.assertNotIn("research.run.failed", event_types)
+        # Every event for this run must share its correlation id.
+        self.assertTrue(all(event.get("correlationid") == result.run_id for event in sink.events))
+        # The completed terminal should carry the discovered source ids.
+        completed = next(event for event in sink.events if event["type"] == "research.run.completed")
+        self.assertTrue(completed["data"]["reference_ids"])
+        self.assertEqual(len(completed["data"]["reference_ids"]), len(result.results))
+        _validate_manifest_events(sink.events)
+
+    def test_search_run_failure_emits_started_and_failed_lifecycle_events(self) -> None:
+        # Regression test for #56: a failing search() run must still emit a
+        # research.run.started event and exactly one research.run.failed
+        # terminal, matching the failure lifecycle of research()/fetch().
+        class ExplodingSearch:
+            def search(self, request):
+                raise SearchError("provider unavailable")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sink = FakeHistorianSink()
+            settings = _enabled_settings(tmpdir)
+            storage = SQLiteStorage(settings.expanded_database_path)
+            storage.initialize()
+            service = ResearchService(
+                storage=storage,
+                resolver=FakeResolverClient(),
+                search_client=ExplodingSearch(),
+                fetcher=FakeFetcher(),
+                settings=settings,
+                historian_sink=sink,
+            )
+            with self.assertRaises(SearchError):
+                service.search("who is the mayor of new york")
+
+        event_types = [event["type"] for event in sink.events]
+        self.assertIn("research.run.started", event_types)
+        self.assertEqual(event_types.count("research.run.failed"), 1)
+        self.assertNotIn("research.run.completed", event_types)
+        self.assertTrue(all(
+            event.get("correlationid") is not None for event in sink.events
+            if str(event.get("type", "")).startswith("research.run.")
+        ))
+        _validate_manifest_events(sink.events)
+
     def test_partial_run_event_matches_manifest(self) -> None:
         class PartialResolver(FakeResolverClient):
             def synthesize(self, question, evidence, prior_draft=None):
