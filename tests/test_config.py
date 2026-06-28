@@ -7,7 +7,7 @@ import unittest
 from importlib.resources import files
 from pathlib import Path
 
-from magpie.config import Settings, default_config_path, write_default_config
+from magpie.config import Settings, default_config_path, read_config_template, write_default_config
 from magpie.errors import ConfigError
 from magpie.models import ResponseDetail
 
@@ -200,6 +200,12 @@ class SettingsTests(unittest.TestCase):
             default_config_path(),
             Path("~/.config/magpie/config.json").expanduser(),
         )
+
+    def test_read_config_template_returns_template_text(self) -> None:
+        from importlib.resources import files
+
+        expected = files("magpie").joinpath("config.example.json").read_text(encoding="utf-8")
+        self.assertEqual(read_config_template(), expected)
 
 
 if __name__ == "__main__":

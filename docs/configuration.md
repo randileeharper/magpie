@@ -3,7 +3,9 @@
 Magpie is configured through a JSON config file, with every setting also
 supporting an environment-variable override using the `MAGPIE_` prefix. The
 example schema lives in `magpie/config.example.json` in the repository, and
-can be written to the standard config location with `magpie config init`.
+can be written to the standard config location with `magpie config init` (use
+`--print` to output the template to stdout instead of writing a file). To find
+out which config file Magpie is currently loading, run `magpie config path`.
 
 ## Config Resolution Order
 
