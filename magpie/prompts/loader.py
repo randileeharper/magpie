@@ -7,7 +7,7 @@ from functools import lru_cache
 try:
     from importlib.resources import files as _files
 except ImportError:
-    from importlib_resources import files as _files  # type: ignore[import-not-found]
+    from importlib_resources import files as _files  # type: ignore[import-not-found,no-redef]
 
 
 @lru_cache(maxsize=None)

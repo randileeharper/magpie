@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from .config import Settings
 from .historian import HistorianSink, build_historian_sink
@@ -14,7 +13,7 @@ from .providers.openai_compatible import OpenAICompatibleResolverClient
 from .providers.neonhail import NeonHailWeatherClient
 from .providers.anilist import AniListClient
 from .providers.news_rss import NewsRSSClient
-from .providers.base import AnimeClient, Fetcher, NewsClient, SearchClient, WeatherClient
+from .providers.base import AnimeClient, Fetcher, NewsClient, ResolverClient, SearchClient, WeatherClient
 from .service import ResearchService
 from .storage import SQLiteStorage
 
@@ -41,16 +40,19 @@ def build_app(config_path: str | None = None, *, truncate_debug_logs: bool = Fal
     storage = SQLiteStorage(settings.expanded_database_path)
     storage.initialize()
 
+    search_client: SearchClient
     if settings.search_provider == "fake":
         search_client = FakeSearchClient()
     else:
         search_client = ExaSearchClient(settings=settings)
 
+    fetcher: Fetcher
     if settings.fetch_provider == "fake":
         fetcher = FakeFetcher()
     else:
         fetcher = Crawl4AIFetcher(settings=settings)
 
+    resolver: ResolverClient
     if settings.resolver_backend == "fake":
         resolver = FakeResolverClient(include_reasoning=settings.resolver_include_reasoning)
     else:

@@ -33,6 +33,7 @@ def run_doctor(
     if any(
         section.get("status") != "ok"
         for section in (report["database"], report["search"], report["fetch"], report["news"])
+        if isinstance(section, dict)
     ):
         report["status"] = "error"
     return report

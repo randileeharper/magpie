@@ -220,7 +220,8 @@ class ExaSearchClient:
 
     def _map_api_result(self, item: dict[str, Any]) -> SearchResultRecord:
         highlights = [value for value in item.get("highlights", []) if isinstance(value, str) and value.strip()]
-        inline_text = item.get("text") if isinstance(item.get("text"), str) and item.get("text").strip() else None
+        text_value = item.get("text")
+        inline_text = text_value if isinstance(text_value, str) and text_value.strip() else None
         snippet = highlights[0] if highlights else (inline_text or "")
         return SearchResultRecord(
             title=item.get("title") or "Untitled result",

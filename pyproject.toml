@@ -13,7 +13,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["jsonschema>=4.20,<5", "pytest>=8.0"]
+dev = [
+  "jsonschema>=4.20,<5",
+  "pytest>=8.0",
+  "mypy>=1.0",
+  "ruff>=0.6",
+  "types-protobuf",
+]
 
 [project.scripts]
 magpie = "magpie.cli:main"
@@ -30,3 +36,25 @@ packages = ["magpie"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# Baseline rules: pyflakes (F), pycodestyle errors (E) and warnings (W).
+# E501 (line-too-long) is ignored because the codebase is not formatted to a
+# fixed line length; enabling it would produce a large, unrelated diff. More
+# rule groups (I, UP, B, etc.) can be added incrementally once the codebase is
+# formatted.
+select = ["E", "F", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+# Third-party packages that ship without inline type stubs.
+[[tool.mypy.overrides]]
+module = ["crawl4ai.*", "google.protobuf.*", "uvicorn", "uvicorn.*", "feedparser", "feedparser.*"]
+ignore_missing_imports = true

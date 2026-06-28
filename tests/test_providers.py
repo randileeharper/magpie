@@ -275,23 +275,25 @@ class AniListProviderTests(unittest.TestCase):
                 httpx.MockTransport(handler),
             )
             report = client.get_daily_schedule()
+
+            # 1781049600 = 2026-06-09 17:00 PDT: single-digit day, hour 5 (no leading zero).
+            # The schedule header reflects the local run date; the per-episode
+            # line carries the airing time. Compute the expected value while the
+            # test timezone is still active so it matches what the client used.
+            today = datetime.now().astimezone()
+            date_label = f"{today.strftime('%A, %B')} {today.day}, {today.year}"
+            self.assertEqual(
+                report.answer,
+                f"Anime airing schedule for {date_label} ({today.tzname()}):\n"
+                "5:00 PM - Example Anime, episode 3",
+            )
+            self.assertNotIn("anilist:", report.answer)
         finally:
             if previous_tz is None:
                 os.environ.pop("TZ", None)
             else:
                 os.environ["TZ"] = previous_tz
             time.tzset()
-
-        # 1781049600 = 2026-06-09 17:00 PDT: single-digit day, hour 5 (no leading zero).
-        # The schedule header reflects the local run date; the per-episode line carries the airing time.
-        today = datetime.now().astimezone()
-        date_label = f"{today.strftime('%A, %B')} {today.day}, {today.year}"
-        self.assertEqual(
-            report.answer,
-            f"Anime airing schedule for {date_label} ({today.tzname()}):\n"
-            "5:00 PM - Example Anime, episode 3",
-        )
-        self.assertNotIn("anilist:", report.answer)
 
 
 class NewsRSSProviderTests(unittest.TestCase):

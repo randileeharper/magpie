@@ -110,6 +110,7 @@ def try_anime_route(
     timings: dict[str, list[float]],
     warnings: list[str],
 ) -> SpecializedRouteResult | None:
+    assert ctx.anime_client is not None
     try:
         ctx.set_stage(run_id, "anime")
         anime_request, elapsed = ctx.call_resolver("classify_anime_request", request.question)
@@ -206,6 +207,7 @@ def try_news_route(
     timings: dict[str, list[float]],
     warnings: list[str],
 ) -> SpecializedRouteResult | None:
+    assert ctx.news_client is not None
     try:
         ctx.set_stage(run_id, "news")
         news_request, elapsed = ctx.call_resolver("classify_news_request", request.question)
