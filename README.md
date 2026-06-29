@@ -206,6 +206,7 @@ content, and model output; do not publish them without reviewing their contents.
 
 For contributors and operators working with the code:
 
+- [CONTRIBUTING.md](CONTRIBUTING.md) — contribution expectations and workflow
 - [docs/architecture.md](docs/architecture.md) — design philosophy, routing,
   the research loop, synthesis, stop reasons, concurrency
 - [docs/configuration.md](docs/configuration.md) — full settings reference,
