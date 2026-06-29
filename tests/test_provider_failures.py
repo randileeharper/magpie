@@ -382,6 +382,153 @@ class OpenAICompatibleHTTPErrorTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# 5b. OpenAI-compatible resolver – transient 429/5xx retry
+# ---------------------------------------------------------------------------
+
+class OpenAICompatibleRetryTests(unittest.TestCase):
+    """A transient 429/503 must be retried and succeed on the next attempt."""
+
+    def _settings(self, tmpdir: str, **overrides: object) -> Settings:
+        base = Settings(
+            resolver_base_url="https://llm.test",
+            resolver_model="test-model",
+            resolver_debug_log_path=str(Path(tmpdir) / "resolver.log"),
+            http_retry_backoff_seconds=0,  # no real sleep in tests
+        )
+        for key, value in overrides.items():
+            setattr(base, key, value)
+        return base
+
+    def _ok_response(self) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"route":"web_research","weather_kind":null,"zip_code":null}'
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    def test_transient_429_then_success_succeeds(self) -> None:
+        calls = {"count": 0}
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return httpx.Response(429, text="rate limited")
+            return self._ok_response()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(tmpdir),
+                transport=httpx.MockTransport(handler),
+            )
+            decision = client.route_request("what is the weather?")
+
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(decision.route.value, "web_research")
+
+    def test_transient_503_then_success_succeeds(self) -> None:
+        calls = {"count": 0}
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return httpx.Response(503, text="service unavailable")
+            return self._ok_response()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(tmpdir),
+                transport=httpx.MockTransport(handler),
+            )
+            decision = client.route_request("what is the weather?")
+
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(decision.route.value, "web_research")
+
+    def test_persistent_429_raises_after_retries_exhausted(self) -> None:
+        calls = {"count": 0}
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            calls["count"] += 1
+            return httpx.Response(429, text="rate limited")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(tmpdir, http_retry_max_attempts=3),
+                transport=httpx.MockTransport(handler),
+            )
+            with self.assertRaises(ResolverError) as ctx:
+                client.route_request("what is the weather?")
+
+        self.assertIn("429", str(ctx.exception))
+        self.assertEqual(calls["count"], 3)
+
+    def test_retry_disabled_when_max_attempts_one(self) -> None:
+        calls = {"count": 0}
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            calls["count"] += 1
+            return httpx.Response(429, text="rate limited")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(tmpdir, http_retry_max_attempts=1),
+                transport=httpx.MockTransport(handler),
+            )
+            with self.assertRaises(ResolverError):
+                client.route_request("what is the weather?")
+
+        self.assertEqual(calls["count"], 1)
+
+
+# ---------------------------------------------------------------------------
+# 5c. Exa search – transient 429/5xx retry (API path)
+# ---------------------------------------------------------------------------
+
+class ExaRetryTests(unittest.TestCase):
+    def _settings(self, tmpdir: str, **overrides: object) -> Settings:
+        data: dict[str, object] = {
+            "database_path": str(Path(tmpdir) / "magpie.db"),
+            "search_provider": "exa",
+            "fetch_provider": "fake",
+            "search_transport": "api_only",
+            "search_api_key": "secret",
+            "http_retry_backoff_seconds": 0,
+        }
+        data.update(overrides)
+        path = Path(tmpdir) / "config.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return Settings.load(str(path))
+
+    def test_transient_503_then_success_succeeds(self) -> None:
+        calls = {"count": 0}
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return httpx.Response(503, text="down")
+            return httpx.Response(200, json={"results": []})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = ExaSearchClient(
+                settings=self._settings(tmpdir),
+                transport=httpx.MockTransport(handler),
+            )
+            results = client.search(SearchRequest(query="test", limit=5, freshness_class=FreshnessClass.EVERGREEN))
+
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(results, [])
+
+
+# ---------------------------------------------------------------------------
 # 6. NewsRSS – all-feeds-failed, max_items <= 0, LAST_7_DAYS / YESTERDAY
 # ---------------------------------------------------------------------------
 

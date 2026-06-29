@@ -138,6 +138,8 @@ class Settings:
     max_incremental_answer_characters: int = 6000
     request_timeout_seconds: float = 60.0
     fetch_timeout_seconds: float = 120.0
+    http_retry_max_attempts: int = 2  # total attempts per HTTP call (1 = no retry)
+    http_retry_backoff_seconds: float = 1.0  # base for exponential backoff between retries
     verify_tls: bool = True
     log_level: str = "INFO"
     database_path: str = "~/.local/share/magpie/magpie.db"
@@ -278,6 +280,10 @@ class Settings:
             raise ConfigError("request_timeout_seconds must be positive.")
         if self.fetch_timeout_seconds <= 0:
             raise ConfigError("fetch_timeout_seconds must be positive.")
+        if self.http_retry_max_attempts < 1:
+            raise ConfigError("http_retry_max_attempts must be at least 1.")
+        if self.http_retry_backoff_seconds < 0:
+            raise ConfigError("http_retry_backoff_seconds must be non-negative.")
         if self.cache_recent_ttl_seconds < 0:
             raise ConfigError("cache_recent_ttl_seconds must be non-negative.")
         if self.cache_evergreen_ttl_seconds < 0:
@@ -349,6 +355,8 @@ class Settings:
             "max_incremental_answer_characters": self.max_incremental_answer_characters,
             "request_timeout_seconds": self.request_timeout_seconds,
             "fetch_timeout_seconds": self.fetch_timeout_seconds,
+            "http_retry_max_attempts": self.http_retry_max_attempts,
+            "http_retry_backoff_seconds": self.http_retry_backoff_seconds,
             "verify_tls": self.verify_tls,
             "log_level": self.log_level,
             "database_path": str(self.expanded_database_path),

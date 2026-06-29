@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time
 from html.parser import HTMLParser
 from typing import Any
@@ -38,6 +38,16 @@ class _TextExtractor(HTMLParser):
 class AniListClient:
     settings: Settings
     transport: httpx.BaseTransport | None = None
+    _http_client_store: httpx.Client | None = field(default=None, repr=False)
+
+    def _client(self) -> httpx.Client:
+        if self._http_client_store is None:
+            self._http_client_store = httpx.Client(
+                timeout=self.settings.anime_timeout_seconds,
+                verify=self.settings.verify_tls,
+                transport=self.transport,
+            )
+        return self._http_client_store
 
     def search_anime(self, title_query: str) -> list[AnimeCandidate]:
         candidates = self._search_anime_once(title_query)
@@ -254,17 +264,13 @@ class AniListClient:
 
     def _query(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         try:
-            with httpx.Client(
-                timeout=self.settings.anime_timeout_seconds,
-                verify=self.settings.verify_tls,
-                transport=self.transport,
-            ) as client:
-                response = client.post(
-                    self.settings.anime_base_url,
-                    json={"query": query, "variables": variables},
-                )
-                response.raise_for_status()
-                payload = response.json()
+            client = self._client()
+            response = client.post(
+                self.settings.anime_base_url,
+                json={"query": query, "variables": variables},
+            )
+            response.raise_for_status()
+            payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
             raise AnimeError(f"AniList request failed: {exc}") from exc
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
@@ -275,17 +281,13 @@ class AniListClient:
 
     def _fallback_titles(self, title_query: str) -> list[str]:
         try:
-            with httpx.Client(
-                timeout=self.settings.anime_timeout_seconds,
-                verify=self.settings.verify_tls,
-                transport=self.transport,
-            ) as client:
-                response = client.get(
-                    self.settings.anime_title_search_fallback_url,
-                    params={"q": title_query, "limit": self.settings.anime_candidate_limit},
-                )
-                response.raise_for_status()
-                payload = response.json()
+            client = self._client()
+            response = client.get(
+                self.settings.anime_title_search_fallback_url,
+                params={"q": title_query, "limit": self.settings.anime_candidate_limit},
+            )
+            response.raise_for_status()
+            payload = response.json()
         except (httpx.HTTPError, ValueError):
             return []
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):

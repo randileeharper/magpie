@@ -54,6 +54,8 @@
   "cache_evergreen_ttl_seconds": 2592000,
   "request_timeout_seconds": 60.0,
   "fetch_timeout_seconds": 120.0,
+  "http_retry_max_attempts": 2,
+  "http_retry_backoff_seconds": 1.0,
   "verify_tls": true,
   "log_level": "INFO",
   "database_path": "~/.local/share/magpie/magpie.db",

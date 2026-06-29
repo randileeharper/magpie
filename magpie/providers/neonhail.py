@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -16,20 +16,26 @@ from ..models import Reference, SourceKind, WeatherKind, WeatherReport, utc_now
 class NeonHailWeatherClient:
     settings: Settings
     transport: httpx.BaseTransport | None = None
+    _http_client_store: httpx.Client | None = field(default=None, repr=False)
+
+    def _client(self) -> httpx.Client:
+        if self._http_client_store is None:
+            self._http_client_store = httpx.Client(
+                timeout=self.settings.weather_timeout_seconds,
+                verify=self.settings.verify_tls,
+                transport=self.transport,
+            )
+        return self._http_client_store
 
     def get_weather(self, zip_code: str, kind: WeatherKind) -> WeatherReport:
         if len(zip_code) != 5 or not zip_code.isdigit():
             raise WeatherError("Weather requests require a five-digit US ZIP code.")
         url = f"{self.settings.weather_base_url.rstrip('/')}/{kind.value}/{zip_code}"
         try:
-            with httpx.Client(
-                timeout=self.settings.weather_timeout_seconds,
-                verify=self.settings.verify_tls,
-                transport=self.transport,
-            ) as client:
-                response = client.get(url)
-                response.raise_for_status()
-                payload = response.json()
+            client = self._client()
+            response = client.get(url)
+            response.raise_for_status()
+            payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
             raise WeatherError(f"Neon Hail weather request failed: {exc}") from exc
         if not isinstance(payload, dict):

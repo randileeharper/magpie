@@ -63,6 +63,17 @@ class NewsRSSClient:
         self._feeds = self._load_registry()
         self._cache: dict[str, tuple[float, list[NewsItem]]] = {}
         self._cache_lock = Lock()
+        self._http_client: httpx.Client | None = None
+
+    def _client(self) -> httpx.Client:
+        if self._http_client is None:
+            self._http_client = httpx.Client(
+                timeout=self.settings.news_timeout_seconds,
+                verify=self.settings.verify_tls,
+                transport=self.transport,
+                follow_redirects=True,
+            )
+        return self._http_client
 
     @property
     def _local_tz(self):
@@ -265,23 +276,18 @@ class NewsRSSClient:
         return items
 
     def _fetch_feed_bytes(self, url: str) -> bytes:
-        with httpx.Client(
-            transport=self.transport,
-            timeout=self.settings.news_timeout_seconds,
-            verify=self.settings.verify_tls,
-            follow_redirects=True,
-        ) as client:
-            with client.stream("GET", url, headers={"Accept": "application/rss+xml, application/atom+xml, application/xml"}) as response:
-                response.raise_for_status()
-                chunks: list[bytes] = []
-                total = 0
-                for chunk in response.iter_bytes():
-                    if not chunk:
-                        continue
-                    total += len(chunk)
-                    if total > self.settings.news_max_feed_bytes:
-                        raise NewsError(f"Feed exceeds byte limit: {url}")
-                    chunks.append(chunk)
+        client = self._client()
+        with client.stream("GET", url, headers={"Accept": "application/rss+xml, application/atom+xml, application/xml"}) as response:
+            response.raise_for_status()
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_bytes():
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > self.settings.news_max_feed_bytes:
+                    raise NewsError(f"Feed exceeds byte limit: {url}")
+                chunks.append(chunk)
         return b"".join(chunks)
 
     def _entry_datetime(self, entry: Any) -> datetime | None:

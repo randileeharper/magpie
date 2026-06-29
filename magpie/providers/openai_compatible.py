@@ -36,6 +36,7 @@ from ..models import (
 )
 from ..text import valid_unicode, valid_unicode_tree
 from .base import reasoning_request_options
+from ._http import request_with_retry
 from ..prompts.loader import load_prompt
 
 _DEBUG_LOG_LOCK = threading.Lock()
@@ -73,6 +74,21 @@ class OpenAICompatibleResolverClient:
     settings: Settings
     transport: httpx.BaseTransport | None = None
     _local: threading.local = field(default_factory=threading.local)
+    _client: httpx.Client | None = field(default=None, repr=False)
+
+    def _http_client(self) -> httpx.Client:
+        """Return the long-lived resolver HTTP client, creating it on first use.
+
+        The client is reused across calls to avoid repeated TLS handshakes; the
+        injected ``transport`` (used by tests) is honored when present.
+        """
+        if self._client is None:
+            self._client = httpx.Client(
+                timeout=self.settings.request_timeout_seconds,
+                verify=self.settings.verify_tls,
+                transport=self.transport,
+            )
+        return self._client
 
     def route_request(self, question: str) -> RouteDecision:
         payload = self._ask_json(
@@ -470,16 +486,15 @@ class OpenAICompatibleResolverClient:
             )
             response_json: dict[str, Any] | None = None
             try:
-                with httpx.Client(
-                    timeout=self.settings.request_timeout_seconds,
-                    verify=self.settings.verify_tls,
-                    transport=self.transport,
-                ) as client:
-                    response = client.post(
-                        self.settings.resolver_base_url.rstrip("/") + "/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    )
+                response = request_with_retry(
+                    self._http_client(),
+                    "POST",
+                    self.settings.resolver_base_url.rstrip("/") + "/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    max_attempts=self.settings.http_retry_max_attempts,
+                    backoff_seconds=self.settings.http_retry_backoff_seconds,
+                )
                 elapsed_ms = round((perf_counter() - started) * 1000, 2)
                 response_text = response.text
                 try:

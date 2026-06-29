@@ -79,7 +79,7 @@ class ExaProviderTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             client = ExaSearchClient(
-                settings=self._settings(tmpdir, search_api_key="secret"),
+                settings=self._settings(tmpdir, search_api_key="secret", http_retry_max_attempts=1),
                 transport=httpx.MockTransport(handler),
             )
             results = client.search(SearchRequest(query="test", limit=5, freshness_class=FreshnessClass.RECENT))

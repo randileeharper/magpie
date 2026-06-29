@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -12,6 +12,7 @@ import httpx
 from ..config import Settings
 from ..errors import SearchError
 from ..models import FreshnessClass, SearchRequest, SearchResultRecord
+from ._http import request_with_retry
 
 
 @dataclass(slots=True)
@@ -20,6 +21,7 @@ class ExaSearchClient:
 
     settings: Settings
     transport: httpx.BaseTransport | None = None
+    _http_client_store: httpx.Client | None = field(default=None, repr=False)
 
     def search(self, request: SearchRequest) -> list[SearchResultRecord]:
         errors: list[str] = []
@@ -55,33 +57,39 @@ class ExaSearchClient:
             return report
         try:
             if self.settings.search_transport in {"mcp_first", "mcp_only"}:
-                with self._client() as client:
-                    response = client.post(
-                        self.settings.search_mcp_url,
-                        headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
-                        json={
-                            "jsonrpc": "2.0",
-                            "id": "doctor",
-                            "method": "tools/call",
-                            "params": {"name": self.settings.search_mcp_tool_name, "arguments": {"query": "test", "numResults": 1}},
-                        },
-                    )
+                response = request_with_retry(
+                    self._client(),
+                    "POST",
+                    self.settings.search_mcp_url,
+                    headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "doctor",
+                        "method": "tools/call",
+                        "params": {"name": self.settings.search_mcp_tool_name, "arguments": {"query": "test", "numResults": 1}},
+                    },
+                    max_attempts=self.settings.http_retry_max_attempts,
+                    backoff_seconds=self.settings.http_retry_backoff_seconds,
+                )
                 report["mcp_status_code"] = response.status_code
             elif self.settings.search_transport == "api_only" and self.settings.search_api_key:
-                with self._client() as client:
-                    response = client.post(
-                        self.settings.search_base_url.rstrip("/") + "/search",
-                        headers={
-                            "x-api-key": self.settings.search_api_key,
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "query": "test",
-                            "type": "auto",
-                            "numResults": 1,
-                            "contents": {"text": {"maxCharacters": 500}, "highlights": True},
-                        },
-                    )
+                response = request_with_retry(
+                    self._client(),
+                    "POST",
+                    self.settings.search_base_url.rstrip("/") + "/search",
+                    headers={
+                        "x-api-key": self.settings.search_api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "query": "test",
+                        "type": "auto",
+                        "numResults": 1,
+                        "contents": {"text": {"maxCharacters": 500}, "highlights": True},
+                    },
+                    max_attempts=self.settings.http_retry_max_attempts,
+                    backoff_seconds=self.settings.http_retry_backoff_seconds,
+                )
                 report["api_status_code"] = response.status_code
             else:
                 return report
@@ -94,26 +102,29 @@ class ExaSearchClient:
         return report
 
     def _search_via_mcp(self, request: SearchRequest) -> list[SearchResultRecord]:
-        with self._client() as client:
-            response = client.post(
-                self.settings.search_mcp_url,
-                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": self.settings.search_mcp_tool_name,
-                        "arguments": {
-                            "query": request.query,
-                            "numResults": request.limit,
-                            "livecrawl": "fallback",
-                            "type": "auto",
-                            "contextMaxCharacters": self.settings.search_inline_content_max_characters,
-                        },
+        response = request_with_retry(
+            self._client(),
+            "POST",
+            self.settings.search_mcp_url,
+            headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": self.settings.search_mcp_tool_name,
+                    "arguments": {
+                        "query": request.query,
+                        "numResults": request.limit,
+                        "livecrawl": "fallback",
+                        "type": "auto",
+                        "contextMaxCharacters": self.settings.search_inline_content_max_characters,
                     },
                 },
-            )
+            },
+            max_attempts=self.settings.http_retry_max_attempts,
+            backoff_seconds=self.settings.http_retry_backoff_seconds,
+        )
         if response.status_code >= 400:
             raise SearchError(f"Exa MCP error {response.status_code}: {response.text[:300]}")
 
@@ -135,26 +146,33 @@ class ExaSearchClient:
                 datetime.now(UTC) - timedelta(days=7)
             ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-        with self._client() as client:
-            response = client.post(
-                self.settings.search_base_url.rstrip("/") + "/search",
-                headers={
-                    "x-api-key": self.settings.search_api_key,
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
+        response = request_with_retry(
+            self._client(),
+            "POST",
+            self.settings.search_base_url.rstrip("/") + "/search",
+            headers={
+                "x-api-key": self.settings.search_api_key,
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            max_attempts=self.settings.http_retry_max_attempts,
+            backoff_seconds=self.settings.http_retry_backoff_seconds,
+        )
         if response.status_code >= 400:
             raise SearchError(f"Exa API error {response.status_code}: {response.text[:300]}")
         data = response.json()
         return [self._map_api_result(item) for item in data.get("results", []) if item.get("url")]
 
     def _client(self) -> httpx.Client:
-        return httpx.Client(
-            timeout=self.settings.search_timeout_seconds,
-            verify=self.settings.verify_tls,
-            transport=self.transport,
-        )
+        # Reuse a long-lived client across calls to avoid repeated TLS
+        # handshakes; honor the injected transport for tests.
+        if self._http_client_store is None:
+            self._http_client_store = httpx.Client(
+                timeout=self.settings.search_timeout_seconds,
+                verify=self.settings.verify_tls,
+                transport=self.transport,
+            )
+        return self._http_client_store
 
     def _extract_mcp_text(self, body: str) -> str:
         parsed: dict[str, Any] | None = None
