@@ -137,6 +137,7 @@ class Settings:
     max_synthesis_input_characters: int = 32000
     max_incremental_answer_characters: int = 6000
     request_timeout_seconds: float = 60.0
+    fetch_timeout_seconds: float = 120.0
     verify_tls: bool = True
     log_level: str = "INFO"
     database_path: str = "~/.local/share/magpie/magpie.db"
@@ -275,6 +276,8 @@ class Settings:
             raise ConfigError("resolver_debug_log_max_bytes must be non-negative.")
         if self.request_timeout_seconds <= 0:
             raise ConfigError("request_timeout_seconds must be positive.")
+        if self.fetch_timeout_seconds <= 0:
+            raise ConfigError("fetch_timeout_seconds must be positive.")
         if self.cache_recent_ttl_seconds < 0:
             raise ConfigError("cache_recent_ttl_seconds must be non-negative.")
         if self.cache_evergreen_ttl_seconds < 0:
@@ -345,6 +348,7 @@ class Settings:
             "max_synthesis_input_characters": self.max_synthesis_input_characters,
             "max_incremental_answer_characters": self.max_incremental_answer_characters,
             "request_timeout_seconds": self.request_timeout_seconds,
+            "fetch_timeout_seconds": self.fetch_timeout_seconds,
             "verify_tls": self.verify_tls,
             "log_level": self.log_level,
             "database_path": str(self.expanded_database_path),

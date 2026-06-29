@@ -20,6 +20,10 @@ class _LoopWorker:
     (e.g. repeated ``build_app()`` calls in tests or hot-reloads in a long-lived
     worker) share one daemon thread + event loop instead of accumulating one
     per instance. Use :meth:`shared` to obtain the singleton.
+
+    The worker also owns a lazily-created long-lived ``AsyncWebCrawler`` so that
+    a research run that fetches many sources reuses a single browser process
+    instead of launching/tearing one down per URL.
     """
 
     _singleton: _LoopWorker | None = None
@@ -30,18 +34,70 @@ class _LoopWorker:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         atexit.register(self.close)
+        self._crawler: Any = None
+        self._crawler_lock: asyncio.Lock | None = None
 
     def _run(self) -> None:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    def run(self, coro: Any) -> Any:
+    def run(self, coro: Any, *, timeout: float | None = None) -> Any:
+        """Schedule *coro* on the worker loop and block until it finishes.
+
+        If *timeout* is given and the coroutine does not complete in time, the
+        underlying asyncio task is cancelled and ``TimeoutError`` is raised.
+        Without a timeout the call blocks indefinitely (legacy behaviour).
+        """
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result()
+        if timeout is None:
+            return future.result()
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError:
+            future.cancel()
+            raise
+
+    async def get_crawler(self, imports: dict[str, Any]) -> Any:
+        """Return the long-lived ``AsyncWebCrawler``, creating it on first use.
+
+        *imports* is the dict produced by
+        :meth:`Crawl4AIFetcher._imports` — the worker stays crawl4ai-agnostic
+        by receiving the classes rather than importing them itself.
+        """
+        if self._crawler is not None:
+            return self._crawler
+        if self._crawler_lock is None:
+            self._crawler_lock = asyncio.Lock()
+        async with self._crawler_lock:
+            if self._crawler is not None:
+                return self._crawler
+            browser_config = imports["BrowserConfig"](verbose=False)
+            crawler = imports["AsyncWebCrawler"](config=browser_config)
+            await crawler.__aenter__()
+            self._crawler = crawler
+            return self._crawler
+
+    async def close_crawler(self) -> None:
+        """Shut down the long-lived crawler if one was created."""
+        if self._crawler is not None:
+            try:
+                await self._crawler.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._crawler = None
 
     def close(self) -> None:
         if self._loop.is_closed():
             return
+        # Close the long-lived crawler before stopping the loop so the browser
+        # subprocess is cleaned up. Best-effort: never block shutdown on a
+        # stuck crawler.
+        if self._crawler is not None:
+            try:
+                cleanup = asyncio.run_coroutine_threadsafe(self.close_crawler(), self._loop)
+                cleanup.result(timeout=5)
+            except Exception:
+                pass
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=2)
         if not self._loop.is_closed():
@@ -68,9 +124,16 @@ class Crawl4AIFetcher:
         try:
             if self._worker is None:
                 self._worker = _LoopWorker.shared()
-            return self._worker.run(self._fetch_async(url))
+            return self._worker.run(
+                self._fetch_async(url),
+                timeout=self.settings.fetch_timeout_seconds,
+            )
         except DependencyError:
             raise
+        except TimeoutError as exc:
+            raise FetchError(
+                f"Crawl4AI timed out after {self.settings.fetch_timeout_seconds}s for {url}: {exc}"
+            ) from exc
         except Exception as exc:  # noqa: BLE001
             raise FetchError(f"Crawl4AI failed for {url}: {exc}") from exc
 
@@ -88,19 +151,19 @@ class Crawl4AIFetcher:
 
     async def _fetch_async(self, url: str) -> FetchedSource:
         crawl4ai = self._imports()
-        AsyncWebCrawler = crawl4ai["AsyncWebCrawler"]
-        BrowserConfig = crawl4ai["BrowserConfig"]
         CrawlerRunConfig = crawl4ai["CrawlerRunConfig"]
         CacheMode = crawl4ai["CacheMode"]
 
-        browser_config = BrowserConfig(verbose=False)
         run_config = CrawlerRunConfig(
             cache_mode=CacheMode.BYPASS,
             check_robots_txt=False,
             verbose=False,
         )
-        async with AsyncWebCrawler(config=browser_config) as crawler:
-            result = await crawler.arun(url=url, config=run_config)
+        # Reuse the long-lived crawler owned by the worker instead of creating
+        # (and tearing down) a fresh browser process per URL.
+        assert self._worker is not None
+        crawler = await self._worker.get_crawler(crawl4ai)
+        result = await crawler.arun(url=url, config=run_config)
 
         markdown = self._extract_markdown(result)
         raw_html = getattr(result, "html", None)

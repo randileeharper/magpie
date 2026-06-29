@@ -8,11 +8,13 @@ a copy of its logic.
 
 import json
 import tempfile
+import threading
 import unittest
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from typing import Any
 
 import httpx
 
@@ -631,9 +633,17 @@ class Crawl4AINoUsableContentTests(unittest.TestCase):
                 )
             )
         # _worker is a slot, so assignment is allowed. Replace the shared
-        # singleton with a mock that drives the coroutine synchronously.
+        # singleton with a mock that drives coroutines synchronously.
         fetcher._worker = MagicMock()
-        fetcher._worker.run = lambda coro: _run_async(coro)
+        fetcher._worker.run = lambda coro, timeout=None: _run_async(coro)
+        # _fetch_async now asks the worker for the long-lived crawler. Mirror
+        # the real get_crawler() so the _FakeCrawler from the patched imports
+        # is entered once and reused.
+        async def _get_crawler(imports: dict[str, Any]) -> Any:
+            crawler = imports["AsyncWebCrawler"](config=imports["BrowserConfig"](verbose=False))
+            await crawler.__aenter__()
+            return crawler
+        fetcher._worker.get_crawler = _get_crawler
         return fetcher
 
     def test_fetch_raises_fetch_error_when_no_usable_content(self) -> None:
@@ -661,6 +671,99 @@ class Crawl4AINoUsableContentTests(unittest.TestCase):
             with patch.object(Crawl4AIFetcher, "_imports", fake_imports):
                 with self.assertRaises(FetchError):
                     fetcher.fetch("https://example.com/blank")
+
+
+class Crawl4AITimeoutTests(unittest.TestCase):
+    """A stuck crawl must time out instead of blocking the caller forever."""
+
+    def test_stuck_coroutine_raises_fetch_error_on_timeout(self) -> None:
+        import asyncio
+
+        started = threading.Event()
+
+        async def _stuck_coro(*_args: object) -> object:
+            started.set()
+            await asyncio.Event().wait()  # never completes
+            return MagicMock()
+
+        with _reset_loop_worker():
+            with tempfile.TemporaryDirectory() as tmpdir:
+                fetcher = Crawl4AIFetcher(
+                    settings=Settings(
+                        database_path=str(Path(tmpdir) / "magpie.db"),
+                        fetch_provider="crawl4ai",
+                        fetch_timeout_seconds=0.25,
+                    )
+                )
+            # Use the real shared _LoopWorker so future.result(timeout=...) runs.
+            fetcher._worker = _LoopWorker.shared()
+            # Patch _fetch_async on the class (slots=True forbids instance
+            # assignment) to a coroutine that never completes, so only the
+            # timeout path is exercised.
+            with patch.object(Crawl4AIFetcher, "_fetch_async", _stuck_coro):
+                with self.assertRaises(FetchError) as ctx:
+                    fetcher.fetch("https://example.com/hang")
+        self.assertTrue(started.is_set())
+        self.assertIn("timed out", str(ctx.exception))
+        self.assertIn("https://example.com/hang", str(ctx.exception))
+
+
+class Crawl4AICrawlerReuseTests(unittest.TestCase):
+    """The long-lived crawler must be created once and reused across fetches."""
+
+    def test_crawler_is_entered_once_and_reused_across_fetches(self) -> None:
+        enter_count = 0
+
+        def fake_imports_factory(result: MagicMock):
+            class _FakeCrawler:
+                def __init__(self, config=None):
+                    self.arun_count = 0
+
+                async def __aenter__(self):
+                    nonlocal enter_count
+                    enter_count += 1
+                    return self
+
+                async def __aexit__(self, *_exc):
+                    return False
+
+                async def arun(self, url, config):
+                    self.arun_count += 1
+                    return result
+
+            def fake_imports(_self):
+                return {
+                    "AsyncWebCrawler": _FakeCrawler,
+                    "BrowserConfig": lambda **kw: object(),
+                    "CrawlerRunConfig": lambda **kw: object(),
+                    "CacheMode": MagicMock(),
+                }
+
+            return fake_imports
+
+        result = MagicMock()
+        result.markdown = "# content"
+        result.html = None
+        result.cleaned_html = None
+        result.title = "title"
+        result.success = True
+
+        with _reset_loop_worker():
+            with tempfile.TemporaryDirectory() as tmpdir:
+                fetcher = Crawl4AIFetcher(
+                    settings=Settings(
+                        database_path=str(Path(tmpdir) / "magpie.db"),
+                        fetch_provider="crawl4ai",
+                    )
+                )
+            fetcher._worker = _LoopWorker.shared()
+            fake_imports = fake_imports_factory(result)
+            with patch.object(Crawl4AIFetcher, "_imports", fake_imports):
+                fetcher.fetch("https://example.com/a")
+                fetcher.fetch("https://example.com/b")
+
+        # One browser/crawler entered, reused for both fetches.
+        self.assertEqual(enter_count, 1)
 
 
 def _run_async(coro):

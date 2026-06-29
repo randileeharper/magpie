@@ -53,6 +53,7 @@
   "cache_recent_ttl_seconds": 86400,
   "cache_evergreen_ttl_seconds": 2592000,
   "request_timeout_seconds": 60.0,
+  "fetch_timeout_seconds": 120.0,
   "verify_tls": true,
   "log_level": "INFO",
   "database_path": "~/.local/share/magpie/magpie.db",
