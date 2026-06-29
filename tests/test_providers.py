@@ -20,6 +20,7 @@ from magpie.providers.base import AnimeClient
 from magpie.providers.exa import ExaSearchClient
 from magpie.providers.neonhail import NeonHailWeatherClient
 from magpie.providers.news_rss import NewsRSSClient
+from magpie.providers.fake import FakeNewsClient
 from magpie.providers.crawl4ai_fetcher import Crawl4AIFetcher, _LoopWorker
 
 
@@ -561,6 +562,55 @@ class NewsRSSProviderTests(unittest.TestCase):
 
             # The mutable instance attribute that caused the race must be gone.
             self.assertFalse(hasattr(client, "_request_tz"))
+
+    def test_parse_iso_only_rewrites_trailing_z(self) -> None:
+        # Regression test for #90: _parse_iso must only rewrite a *trailing*
+        # "Z" suffix, not every "Z" in the string. A trailing "Z" and an
+        # explicit "+00:00" offset must parse to the same instant, and a
+        # non-UTC offset must be honored rather than silently overwritten.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = NewsRSSClient(self._settings(tmpdir))
+            tz_minus5 = timezone(timedelta(hours=-5))
+
+            from_z = client._parse_iso("2024-01-15T12:00:00Z", tz_minus5)
+            from_offset = client._parse_iso("2024-01-15T12:00:00+00:00", tz_minus5)
+            self.assertEqual(from_z, from_offset)
+            self.assertEqual(from_z.utcoffset(), timedelta(hours=-5))
+
+            # A -07:00 source instant converted to UTC lands at 19:00Z.
+            as_utc = client._parse_iso("2024-01-15T12:00:00-07:00", UTC)
+            self.assertEqual(as_utc.utcoffset(), timedelta(0))
+            self.assertEqual(as_utc.hour, 19)
+
+    def test_fake_news_timestamps_round_trip_and_are_zone_independent(self) -> None:
+        # Regression test for #91: FakeNewsClient must emit published_at
+        # timestamps from an aware UTC datetime with an explicit offset so
+        # they round-trip through datetime parsing without depending on the
+        # runner's local timezone.
+        previous_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "America/Los_Angeles"
+        time.tzset()
+        try:
+            request = NewsRequest(
+                NewsRequestKind.CATEGORY, NewsCategory.AI, NewsTimeScope.LAST_24_HOURS
+            )
+            report = FakeNewsClient().get_news(request, 5)
+            self.assertEqual(len(report.references), 5)
+            for ref in report.references:
+                self.assertIsNotNone(ref.published_at)
+                parsed = datetime.fromisoformat(ref.published_at)
+                self.assertIsNotNone(parsed.tzinfo, f"naive timestamp: {ref.published_at!r}")
+                self.assertEqual(
+                    parsed.utcoffset(),
+                    timedelta(0),
+                    f"non-UTC offset: {ref.published_at!r}",
+                )
+        finally:
+            if previous_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = previous_tz
+            time.tzset()
 
 
 class Crawl4AIFetcherTests(unittest.TestCase):

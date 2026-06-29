@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from ..models import (
     EvidenceItem,
@@ -156,14 +156,21 @@ class FakeSearchClient:
 @dataclass(slots=True)
 class FakeNewsClient:
     def get_news(self, request: NewsRequest, max_items: int) -> NewsReport:
-        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        # Build published_at timestamps from an aware UTC datetime so they are
+        # portable across test runners and round-trip through ISO parsing
+        # regardless of the host's local timezone. A fixed +00:00 offset
+        # avoids the DST/zone-dependent "-07:00" the previous implementation
+        # hard-coded, and formatting via strftime handles index values >= 10
+        # (the old "0{index}:00:00" template broke past nine stories).
+        base = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        today = base.strftime("%Y-%m-%d")
         references = [
             Reference(
                 f"rss:{index}",
                 f"Story {index}",
                 f"https://example.com/story-{index}",
                 "Example Feed",
-                f"{today}T0{index}:00:00-07:00",
+                (base + timedelta(hours=index)).strftime("%Y-%m-%dT%H:%M:%S+00:00"),
                 None,
                 SourceKind.RSS_FEED,
             )
@@ -171,8 +178,8 @@ class FakeNewsClient:
         ]
         lines = [
             (
-                f"{index}. {today} 0{index}:00 PDT | Story {index} | Example summary {index}. | "
-                f"Example Feed | https://example.com/story-{index}"
+                f"{index}. {today} {(base + timedelta(hours=index)).strftime('%H:%M')} UTC | "
+                f"Story {index} | Example summary {index}. | Example Feed | https://example.com/story-{index}"
             )
             for index in range(1, max_items + 1)
         ]
