@@ -372,7 +372,13 @@ class NewsRSSClient:
         return dt.strftime("%Y-%m-%d %-I:%M %p %Z")
 
     def _parse_iso(self, value: str, request_tz) -> datetime:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(request_tz)
+        # Only rewrite a trailing "Z" suffix to an explicit offset; replacing
+        # every "Z" corrupts ISO strings that happen to contain it elsewhere
+        # (e.g. in a future timezone abbreviation). datetime.fromisoformat()
+        # on Python 3.11+ accepts a trailing "Z" directly, but older strings
+        # may arrive without it, so normalize defensively.
+        normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+        return datetime.fromisoformat(normalized).astimezone(request_tz)
 
     def _cache_get(self, feed_id: str) -> list[NewsItem] | None:
         if self.settings.news_cache_ttl_seconds == 0:
