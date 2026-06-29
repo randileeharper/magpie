@@ -12,7 +12,7 @@ from unittest import mock
 from magpie import cli
 from magpie.a2a import LocalA2AClient
 from magpie.models import ResearchRequest
-from magpie.errors import A2ARequestError, A2AUnavailableError
+from magpie.errors import A2ARequestError, A2AUnavailableError, FetchError, SearchError
 
 
 class CLITests(unittest.TestCase):
@@ -431,6 +431,91 @@ class CLITests(unittest.TestCase):
                     os.environ["HOME"] = previous_home
         self.assertEqual(exit_code, 0)
         self.assertIn("none", stdout.getvalue())
+
+    def _tmp_config(self) -> str:
+        """Write a minimal fake-provider config to a temp dir and return its path."""
+        tmpdir = tempfile.mkdtemp()
+        config_path = Path(tmpdir) / "config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "database_path": str(Path(tmpdir) / "magpie.db"),
+                    "search_provider": "fake",
+                    "fetch_provider": "fake",
+                    "resolver_backend": "fake",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return str(config_path)
+
+    def _fake_app(self, *, search_exc=None, fetch_exc=None):
+        """An AppContext stand-in whose service raises on search/fetch."""
+
+        class _FakeService:
+            def search(self, _query, max_results=5):
+                if search_exc:
+                    raise search_exc
+                return {"results": []}
+
+            def fetch(self, **_kwargs):
+                if fetch_exc:
+                    raise fetch_exc
+                return {}
+
+            def close(self) -> None:
+                pass
+
+        class _FakeStorage:
+            def close(self) -> None:
+                pass
+
+        class _FakeApp:
+            service = _FakeService()
+            storage = _FakeStorage()
+            settings = mock.Mock()
+
+        return _FakeApp()
+
+    def test_search_known_error_returns_exit_2(self) -> None:
+        config_path = Path(self._tmp_config())
+        with mock.patch(
+            "magpie.app.build_app",
+            return_value=self._fake_app(search_exc=SearchError("provider unavailable")),
+        ), redirect_stderr(io.StringIO()):
+            exit_code = cli.main(["--config", str(config_path), "search", "query"])
+        self.assertEqual(exit_code, 2)
+
+    def test_search_unexpected_error_returns_exit_3(self) -> None:
+        config_path = Path(self._tmp_config())
+        with mock.patch(
+            "magpie.app.build_app",
+            return_value=self._fake_app(search_exc=TypeError("boom")),
+        ), redirect_stderr(io.StringIO()):
+            exit_code = cli.main(["--config", str(config_path), "search", "query"])
+        self.assertEqual(exit_code, 3)
+
+    def test_fetch_known_error_returns_exit_2(self) -> None:
+        config_path = Path(self._tmp_config())
+        with mock.patch(
+            "magpie.app.build_app",
+            return_value=self._fake_app(fetch_exc=FetchError("fetch failed")),
+        ), redirect_stderr(io.StringIO()):
+            exit_code = cli.main(["--config", str(config_path), "fetch", "https://example.com/x"])
+        self.assertEqual(exit_code, 2)
+
+    def test_fetch_non_numeric_index_returns_exit_2_without_traceback(self) -> None:
+        # A common user typo: `magpie fetch abc` (neither URL nor integer)
+        # must produce a clean error message + exit 2, not a traceback/exit 3.
+        config_path = Path(self._tmp_config())
+        stderr = io.StringIO()
+        with mock.patch(
+            "magpie.app.build_app", return_value=self._fake_app()
+        ), redirect_stderr(stderr):
+            exit_code = cli.main(["--config", str(config_path), "fetch", "not-a-url-or-int"])
+        self.assertEqual(exit_code, 2)
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertIn("integer", stderr.getvalue())
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -12,7 +13,15 @@ from .a2a import LocalA2AClient, build_fastapi_app
 from .app import AppContext, build_app
 from .config import Settings
 from .doctor import run_doctor
-from .errors import A2ARequestError, A2AUnavailableError, ConfigError, StorageError
+from .errors import (
+    A2ARequestError,
+    A2AUnavailableError,
+    ConfigError,
+    FetchError,
+    ResolverError,
+    SearchError,
+    StorageError,
+)
 from .models import ResearchRequest, ResponseDetail, to_jsonable
 from .text import valid_unicode
 
@@ -226,9 +235,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 payload = to_jsonable(result)
                 _app.service.close()
                 _app.storage.close()
-            except Exception as exc:
+            except (SearchError, ResolverError, ConfigError, StorageError, OSError) as exc:
                 print(str(exc), file=sys.stderr)
-                return 1
+                return 2
+            except Exception as exc:
+                traceback.print_exc(file=sys.stderr)
+                print(f"Unexpected error: {exc}", file=sys.stderr)
+                return 3
             if args.as_json:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
@@ -245,7 +258,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if is_url:
                     fetch_kwargs["url"] = target
                 else:
-                    fetch_kwargs["index"] = int(target)
+                    try:
+                        fetch_kwargs["index"] = int(target)
+                    except ValueError:
+                        print(
+                            f"fetch target must be a URL or an integer index, got: {target!r}",
+                            file=sys.stderr,
+                        )
+                        _app.service.close()
+                        _app.storage.close()
+                        return 2
                     if args.run_id:
                         fetch_kwargs["run_id"] = args.run_id
                 if args.full:
@@ -253,9 +275,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 payload = to_jsonable(_app.service.fetch(**fetch_kwargs))
                 _app.service.close()
                 _app.storage.close()
-            except Exception as exc:
+            except (FetchError, ResolverError, ConfigError, StorageError, OSError) as exc:
                 print(str(exc), file=sys.stderr)
-                return 1
+                return 2
+            except Exception as exc:
+                traceback.print_exc(file=sys.stderr)
+                print(f"Unexpected error: {exc}", file=sys.stderr)
+                return 3
             if args.as_json:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
