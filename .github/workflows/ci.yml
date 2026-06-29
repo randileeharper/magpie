@@ -35,3 +35,11 @@ jobs:
 
       - name: Pytest
         run: uv run pytest -q
+
+      - name: Verify wheel contains force-included data files
+        # pyproject.toml force-includes magpie/config.example.json and
+        # magpie/news_feeds.json (both loaded at runtime via importlib.resources).
+        # This guards against a hatch/packaging change silently dropping them.
+        run: |
+          uv build --wheel
+          uv run python -c "import glob, zipfile; z=zipfile.ZipFile(glob.glob('dist/*.whl')[0]); names=z.namelist(); assert 'magpie/config.example.json' in names, 'config.example.json missing from wheel'; assert 'magpie/news_feeds.json' in names, 'news_feeds.json missing from wheel'; print('wheel contains force-included data files')"

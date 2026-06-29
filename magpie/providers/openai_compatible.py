@@ -8,6 +8,7 @@ import re
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 
@@ -39,6 +40,30 @@ from ..prompts.loader import load_prompt
 
 _DEBUG_LOG_LOCK = threading.Lock()
 LOGGER = logging.getLogger(__name__)
+
+
+def _rotate_debug_log_if_needed(path: Path, max_bytes: int) -> None:
+    """Rotate the resolver debug log when it exceeds ``max_bytes``.
+
+    A single rotated sidecar (``<path>.1``) is kept; older rotations are
+    overwritten. Rotation is cheap (a single ``rename``) and only triggers
+    when the cap is exceeded, so normal logging latency is unaffected.
+    ``max_bytes <= 0`` disables rotation.
+    """
+    if max_bytes <= 0:
+        return
+    try:
+        if path.stat().st_size < max_bytes:
+            return
+    except FileNotFoundError:
+        return
+    rotated = path.with_suffix(path.suffix + ".1")
+    try:
+        rotated.unlink(missing_ok=True)
+        path.replace(rotated)
+    except OSError:
+        # Rotation is best-effort; never let it break a research run.
+        LOGGER.debug("failed to rotate resolver debug log %s", path)
 
 
 @dataclass(slots=True)
@@ -390,6 +415,7 @@ class OpenAICompatibleResolverClient:
         self._local.call_index = 0
         path = self.settings.expanded_resolver_debug_log_path
         path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_debug_log_if_needed(path, self.settings.resolver_debug_log_max_bytes)
         timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         with _DEBUG_LOG_LOCK, path.open("a", encoding="utf-8", errors="backslashreplace") as handle:
             handle.write(

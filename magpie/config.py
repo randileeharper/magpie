@@ -124,6 +124,7 @@ class Settings:
     resolver_include_raw_output: bool = False
     resolver_max_tokens: int = 8192
     resolver_debug_log_path: str = "~/.local/share/magpie/magpie-resolver.log"
+    resolver_debug_log_max_bytes: int = 10_485_760  # 10 MiB; 0 disables rotation
     fetch_debug_log_path: str = "~/.local/share/magpie/magpie-fetch.log"
     include_timing_debug: bool = False
     response_detail: ResponseDetail = ResponseDetail.COMPACT
@@ -270,6 +271,8 @@ class Settings:
             raise ConfigError("news_summary_max_characters must be between 40 and 1000.")
         if self.resolver_max_tokens < 1:
             raise ConfigError("resolver_max_tokens must be positive.")
+        if self.resolver_debug_log_max_bytes < 0:
+            raise ConfigError("resolver_debug_log_max_bytes must be non-negative.")
         if self.request_timeout_seconds <= 0:
             raise ConfigError("request_timeout_seconds must be positive.")
         if self.cache_recent_ttl_seconds < 0:
@@ -329,6 +332,7 @@ class Settings:
             "resolver_include_raw_output": self.resolver_include_raw_output,
             "resolver_max_tokens": self.resolver_max_tokens,
             "resolver_debug_log_path": self.resolver_debug_log_path,
+            "resolver_debug_log_max_bytes": self.resolver_debug_log_max_bytes,
             "fetch_debug_log_path": self.fetch_debug_log_path,
             "include_timing_debug": self.include_timing_debug,
             "response_detail": self.response_detail.value,

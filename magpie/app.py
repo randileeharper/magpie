@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from .config import Settings
@@ -16,6 +17,8 @@ from .providers.news_rss import NewsRSSClient
 from .providers.base import AnimeClient, Fetcher, NewsClient, ResolverClient, SearchClient, WeatherClient
 from .service import ResearchService
 from .storage import SQLiteStorage
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -33,6 +36,12 @@ class AppContext:
 
 def build_app(config_path: str | None = None, *, truncate_debug_logs: bool = False) -> AppContext:
     settings = Settings.load(config_path)
+    if not settings.verify_tls:
+        LOGGER.warning(
+            "verify_tls is disabled: TLS certificate verification is turned off for ALL outbound "
+            "HTTP clients (search, resolver, AniList, NeonHail, news feeds). This is insecure and "
+            "should only be used for local development or testing."
+        )
     if truncate_debug_logs:
         for path in (settings.expanded_resolver_debug_log_path, settings.expanded_fetch_debug_log_path):
             path.parent.mkdir(parents=True, exist_ok=True)

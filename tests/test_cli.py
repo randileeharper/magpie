@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from magpie import cli
+from magpie.app import build_app
 from magpie.a2a import LocalA2AClient
 from magpie.models import ResearchRequest
 from magpie.errors import A2ARequestError, A2AUnavailableError, FetchError, SearchError
@@ -542,6 +543,53 @@ class CLITests(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertNotIn("Traceback", stderr.getvalue())
         self.assertIn("integer", stderr.getvalue())
+
+    def test_build_app_warns_when_verify_tls_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "database_path": str(Path(tmpdir) / "magpie.db"),
+                        "search_provider": "fake",
+                        "fetch_provider": "fake",
+                        "resolver_backend": "fake",
+                        "verify_tls": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertLogs("magpie.app", level="WARNING") as captured:
+                app = build_app(str(config_path))
+            try:
+                self.assertFalse(app.settings.verify_tls)
+                self.assertTrue(
+                    any("verify_tls" in message for message in captured.output),
+                    f"expected verify_tls warning, got: {captured.output}",
+                )
+            finally:
+                app.storage.close()
+
+    def test_build_app_does_not_warn_when_verify_tls_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "database_path": str(Path(tmpdir) / "magpie.db"),
+                        "search_provider": "fake",
+                        "fetch_provider": "fake",
+                        "resolver_backend": "fake",
+                        "verify_tls": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            # assertLogs requires at least one record; assertNoLogs is the
+            # correct inverse (3.10+).
+            with self.assertNoLogs("magpie.app", level="WARNING"):
+                app = build_app(str(config_path))
+            app.storage.close()
 
 
 if __name__ == "__main__":

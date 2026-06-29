@@ -679,6 +679,70 @@ class OpenAICompatibleResolverTests(unittest.TestCase):
         self.assertEqual(draft.answer, "bad ? text")
         self.assertIn("\\ud8a2", content)
 
+    def test_resolver_debug_log_rotates_when_size_cap_exceeded(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"summary":"s","answer":"a","cited_source_ids":[],'
+                                    '"remaining_questions":[],"source_answers_question":true}'
+                                )
+                            }
+                        }
+                    ]
+                },
+            )
+
+        evidence = [EvidenceItem(evidence_id="e-1", source_id="source-1", excerpt="fact", note="note")]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "resolver.log"
+            # Pre-seed the log so it already exceeds the small cap.
+            log_path.write_text("x" * 100, encoding="utf-8")
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(
+                    tmpdir,
+                    resolver_debug_log_path=str(log_path),
+                    resolver_debug_log_max_bytes=50,
+                ),
+                transport=httpx.MockTransport(handler),
+            )
+            client.begin_request_debug_log("run-123", "question")
+            client.synthesize("question", evidence)
+
+            self.assertTrue(log_path.exists())
+            rotated = log_path.with_suffix(".log.1")
+            self.assertTrue(rotated.exists())
+            old = rotated.read_text(encoding="utf-8")
+            new = log_path.read_text(encoding="utf-8")
+            # The oversized pre-seed must have moved to the rotation sidecar,
+            # and the new run must start fresh in the primary log.
+            self.assertEqual(old, "x" * 100)
+            self.assertNotIn("x" * 100, new)
+            self.assertIn("run_id: run-123", new)
+
+    def test_resolver_debug_log_rotation_disabled_when_cap_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "resolver.log"
+            log_path.write_text("x" * 100, encoding="utf-8")
+            client = OpenAICompatibleResolverClient(
+                settings=self._settings(
+                    tmpdir,
+                    resolver_debug_log_path=str(log_path),
+                    resolver_debug_log_max_bytes=0,
+                ),
+                transport=httpx.MockTransport(handler=lambda _r: httpx.Response(200, json={})),
+            )
+            client.begin_request_debug_log("run-123", "question")
+            # No rotation sidecar should appear when the cap is disabled.
+            self.assertFalse(log_path.with_suffix(".log.1").exists())
+            content = log_path.read_text(encoding="utf-8")
+            self.assertIn("x" * 100, content)
+            self.assertIn("run_id: run-123", content)
+
 
 if __name__ == "__main__":
     unittest.main()
