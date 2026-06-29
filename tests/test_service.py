@@ -1070,7 +1070,8 @@ class ServiceTests(unittest.TestCase):
             # The run row was written outside the transaction and survives.
             run = service.storage.get_run(result.run_id)
             self.assertEqual(run["status"], "failed")
-            # The round's query was rolled back by the transaction.
+            # The round's query/source-links were discarded by the compensating
+            # cleanup run after synthesis failed outside the transaction.
             with service.storage._connect() as connection:
                 queries = connection.execute(
                     "SELECT COUNT(*) FROM research_queries WHERE run_id=?", (result.run_id,)

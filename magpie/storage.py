@@ -462,6 +462,33 @@ class SQLiteStorage:
             row = connection.execute("SELECT * FROM research_runs WHERE run_id=?", (run_id,)).fetchone()
         return dict(row) if row else None
 
+    def discard_round(self, run_id: str, query_id: str) -> None:
+        """Discard the persisted writes of a single failed research round.
+
+        Deletes the round's ``research_queries`` row (which cascades to its
+        ``search_results``), the run's ``run_source_links`` rows, and the
+        run's ``evidence_items``. The ``sources`` and ``documents`` rows are
+        intentionally left in place: they are shared across runs (the cache-hit
+        and URL-cache paths reuse them) and are referenced by
+        ``source_rejections`` without an ``ON DELETE CASCADE``, so deleting them
+        here could orphan foreign keys and break cross-run source reuse.
+
+        Intended as the compensating cleanup for a round whose synthesis ran
+        outside the storage transaction and then failed: the round leaves no
+        query/source-link/evidence rows behind, preserving the invariant that a
+        failed round's writes do not persist.
+        """
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM evidence_items WHERE run_id=?", (run_id,)
+            )
+            connection.execute(
+                "DELETE FROM run_source_links WHERE run_id=?", (run_id,)
+            )
+            connection.execute(
+                "DELETE FROM research_queries WHERE query_id=?", (query_id,)
+            )
+
     def get_event_payloads(self, run_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
