@@ -12,7 +12,15 @@ from .a2a import LocalA2AClient, build_fastapi_app
 from .app import AppContext, build_app
 from .config import Settings
 from .doctor import run_doctor
-from .errors import A2ARequestError, A2AUnavailableError, ConfigError, StorageError
+from .errors import (
+    A2ARequestError,
+    A2AUnavailableError,
+    ConfigError,
+    FetchError,
+    ResolverError,
+    SearchError,
+    StorageError,
+)
 from .models import ResearchRequest, ResponseDetail, to_jsonable
 from .text import valid_unicode
 
@@ -217,7 +225,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(payload, indent=2, sort_keys=True))
             return 0 if payload.get("status") == "ok" else 2
 
-        if args.command == "search":
+       if args.command == "search":
             settings = Settings.load(args.config_path)
             try:
                 from .app import build_app as _build_app
@@ -226,16 +234,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 payload = to_jsonable(result)
                 _app.service.close()
                 _app.storage.close()
-            except Exception as exc:
+            except (SearchError, ResolverError, ConfigError, StorageError, OSError) as exc:
                 print(str(exc), file=sys.stderr)
-                return 1
+                return 2
+            except Exception as exc:
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                print(f"Unexpected error: {exc}", file=sys.stderr)
+                return 3
             if args.as_json:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
                 print(valid_unicode(_search_output(payload)))
             return 0
 
-        if args.command == "fetch":
+       if args.command == "fetch":
             try:
                 from .app import build_app as _build_app
                 _app = _build_app(args.config_path)
@@ -253,9 +266,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 payload = to_jsonable(_app.service.fetch(**fetch_kwargs))
                 _app.service.close()
                 _app.storage.close()
-            except Exception as exc:
+            except (FetchError, ResolverError, ConfigError, StorageError, OSError) as exc:
                 print(str(exc), file=sys.stderr)
-                return 1
+                return 2
+            except Exception as exc:
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                print(f"Unexpected error: {exc}", file=sys.stderr)
+                return 3
             if args.as_json:
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
