@@ -312,17 +312,26 @@ class ResearchService:
                 ctx.seen_urls.update(self.storage.get_canonical_urls(cached_ids))
                 for reference in self.storage.get_source_references(cached_ids):
                     self._record_cache_hit(run_id, reference, "exact_query")
+                # Persistence only: link cached sources to this run and select
+                # evidence extracts. These are the writes that must be atomic.
                 with self.storage.transaction():
                     cached_evidence = self._evidence_from_sources(
                         run_id, cached_ids, request.question, ctx, "Reused from exact-query cache"
                     )
-                    if cached_evidence:
-                        ctx.evidence.extend(cached_evidence)
-                        ctx.last_draft = self._synthesize(run_id, request.question, cached_evidence, ctx.last_draft, timings)
-                        ctx.remaining_questions = self._remaining_questions_after_quality(
-                            run_id, request, ctx
-                        )
-                        if not ctx.last_draft.source_answers_question:
+                if cached_evidence:
+                    ctx.evidence.extend(cached_evidence)
+                    # Synthesis makes an LLM/network call and must not run
+                    # inside the SQLite write transaction; otherwise the write
+                    # lock is held for the duration of the resolver round-trip.
+                    ctx.last_draft = self._synthesize(run_id, request.question, cached_evidence, ctx.last_draft, timings)
+                    ctx.remaining_questions = self._remaining_questions_after_quality(
+                        run_id, request, ctx
+                    )
+                    if not ctx.last_draft.source_answers_question:
+                        # A second, short transaction rejects the sources that
+                        # failed to answer, keeping the lock held only for the
+                        # writes themselves.
+                        with self.storage.transaction():
                             for cached_item in cached_evidence:
                                 self.storage.reject_source_for_query(normalize_query(request.question), cached_item.source_id)
                                 self._record_source_rejected(
