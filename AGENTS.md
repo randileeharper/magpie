@@ -42,6 +42,7 @@ For issue work:
 3. Verify with `uv run` commands before opening a PR.
 4. In the PR body, include a concise summary and exact test commands run.
 5. After merge, switch back to `main`, fetch/prune the remote, fast-forward local `main`, and delete the local feature branch.
+6. When reporting a PR or issue URL, always present it as plain text with no Markdown formatting whatsoever — no bold, no italics, no backticks, no inline code. Formatted URLs are not clickable in Polytoken. For example, write the URL on its own line as plain text: https://github.com/randileeharper/magpie/pull/123
 
 This repository's GitHub remote may be named `upstream` rather than `origin`; check configured remotes if a push to `origin` fails.
 
