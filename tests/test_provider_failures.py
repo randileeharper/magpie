@@ -324,6 +324,114 @@ class ExaMalformedSSETests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# 4b. Exa – MCP block-level parsing edge cases (exa.py _parse_mcp_blocks)
+# ---------------------------------------------------------------------------
+
+class ExaMcpBlockParseTests(unittest.TestCase):
+    """Edge-case coverage for Exa MCP text block parsing.
+
+    Most tests call ``_parse_mcp_blocks`` directly since it is a pure
+    function; the final test exercises the full ``search()`` path to verify
+    that an unparseable MCP body triggers API fallback in ``mcp_first`` mode.
+    """
+
+    def _client(self, tmpdir: str, **overrides: object) -> ExaSearchClient:
+        return ExaSearchClient(settings=_settings_from_json(tmpdir, **overrides))
+
+    def test_block_missing_url_raises_search_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = self._client(tmpdir)
+            with self.assertRaises(SearchError) as ctx:
+                client._parse_mcp_blocks("Title: Foo\nText: content")
+        self.assertIn("parseable results", str(ctx.exception))
+
+    def test_block_missing_title_uses_untitled_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = self._client(tmpdir)
+            results = client._parse_mcp_blocks(
+                "Title: \nURL: https://example.com\nText: content"
+            )
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].title, "Untitled result")
+        self.assertEqual(results[0].url, "https://example.com")
+
+    def test_text_without_title_separator_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = self._client(tmpdir)
+            with self.assertRaises(SearchError) as ctx:
+                client._parse_mcp_blocks("No results found for your query.")
+        self.assertIn("parseable results", str(ctx.exception))
+
+    def test_multiple_blocks_are_parsed(self) -> None:
+        text = (
+            "Title: First\nURL: https://example.com/1\nText: first content\n---"
+            "Title: Second\nURL: https://example.com/2\nText: second content\n---"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = self._client(tmpdir)
+            results = client._parse_mcp_blocks(text)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0].url, "https://example.com/1")
+        self.assertEqual(results[1].url, "https://example.com/2")
+
+    def test_block_with_highlights_extracts_content(self) -> None:
+        text = "Title: Foo\nURL: https://example.com\nHighlights:\nkey insight"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = self._client(tmpdir)
+            results = client._parse_mcp_blocks(text)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].inline_text, "key insight")
+
+    def test_trailing_separator_is_stripped(self) -> None:
+        text = "Title: Foo\nURL: https://example.com\nText: some content\n---"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = self._client(tmpdir)
+            results = client._parse_mcp_blocks(text)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].inline_text, "some content")
+
+    def test_mcp_first_falls_back_to_api_when_results_unparseable(self) -> None:
+        api_payload = {
+            "results": [
+                {
+                    "title": "API Result",
+                    "url": "https://example.com/api",
+                    "text": "api content",
+                    "highlights": ["api highlight"],
+                    "author": "Example",
+                    "publishedDate": "2025-01-01",
+                }
+            ]
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/mcp"):
+                # Valid MCP envelope with text that has no Title/URL blocks.
+                body = (
+                    'data: {"result":{"content":[{"type":"text","text":'
+                    '"No results found for your query."}]}}\n\n'
+                )
+                return httpx.Response(200, text=body)
+            return httpx.Response(200, json=api_payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = ExaSearchClient(
+                settings=_settings_from_json(
+                    tmpdir,
+                    search_transport="mcp_first",
+                    search_api_key="secret",
+                ),
+                transport=httpx.MockTransport(handler),
+            )
+            results = client.search(
+                SearchRequest(query="test", limit=5, freshness_class=FreshnessClass.EVERGREEN)
+            )
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].url, "https://example.com/api")
+        self.assertEqual(results[0].provider, "exa_api")
+
+
+# ---------------------------------------------------------------------------
 # 5. OpenAI-compatible resolver – HTTP 4xx/5xx responses
 # ---------------------------------------------------------------------------
 

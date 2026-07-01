@@ -175,6 +175,15 @@ class ExaSearchClient:
         return self._http_client_store
 
     def _extract_mcp_text(self, body: str) -> str:
+        """Extract the text content from an Exa MCP JSON-RPC/SSE response.
+
+        MCP parsing is best-effort: Exa returns results as a text blob inside
+        a JSON-RPC ``content`` array, and this method locates that text. If
+        Exa changes the envelope shape, a ``SearchError`` is raised. For
+        production use, ``api_only`` is recommended when an API key is
+        available; the REST API returns structured JSON and is unaffected by
+        text-format changes.
+        """
         parsed: dict[str, Any] | None = None
         for line in body.splitlines():
             if not line.startswith("data:"):
@@ -206,6 +215,16 @@ class ExaSearchClient:
         raise SearchError("Exa MCP returned empty content.")
 
     def _parse_mcp_blocks(self, text: str) -> list[SearchResultRecord]:
+        """Parse Exa MCP text content into search-result records.
+
+        MCP parsing is best-effort: the text is split heuristically on the
+        ``Title:`` separator and each block is scanned for ``URL:``,
+        ``Text:``, and ``Highlights:`` fields. If Exa changes this text
+        format, ``SearchError`` is raised instead of silently returning an
+        empty list. In ``mcp_first`` mode this triggers API fallback; in
+        ``mcp_only`` mode it surfaces the error. For production use,
+        ``api_only`` is recommended when an API key is available.
+        """
         results: list[SearchResultRecord] = []
         blocks = [block for block in text.split("Title: ") if block.strip()]
         for block in blocks:
@@ -233,6 +252,12 @@ class ExaSearchClient:
                     inline_text=content or None,
                     raw_result={"text_block": cleaned},
                 )
+            )
+        if not results:
+            raise SearchError(
+                "Exa MCP response did not contain any parseable results; "
+                "the MCP text format may have changed. Consider using "
+                "search_transport='api_only'."
             )
         return results
 

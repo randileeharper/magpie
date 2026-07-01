@@ -70,6 +70,14 @@ where relevant.
 MCP first with API fallback (`mcp_first`), MCP only (`mcp_only`), or REST API
 only (`api_only`).
 
+MCP response parsing is best-effort: the client splits the MCP tool's text
+response heuristically on the `Title:` separator and scans for `URL:` and
+`Text:`/`Highlights:` fields. If Exa changes this text format, `mcp_only`
+will raise a `SearchError` instead of silently returning empty results, and
+`mcp_first` will fall back to the REST API. For production use, `api_only` is
+recommended when an API key is available; the REST API returns structured
+JSON and is not affected by text-format changes.
+
 ### Fetch
 
 | Setting                  | Default     | Notes                       |
