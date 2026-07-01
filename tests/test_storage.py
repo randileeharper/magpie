@@ -217,6 +217,51 @@ class StorageTests(unittest.TestCase):
             queries = storage.list_queries_for_run(run_id)
         self.assertEqual(queries, ["round-one"])
 
+    def test_discard_round_removes_round_writes_but_keeps_sources(self) -> None:
+        """discard_round (compensating cleanup for synthesis-outside-txn, #107)
+        removes the round's query (cascading its search results), the run's
+        source links, and the run's evidence items, while leaving the shared
+        sources/documents rows in place for cross-run reuse.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = SQLiteStorage(Path(tmpdir) / "magpie.db")
+            storage.initialize()
+            run_id = storage.create_run("q", None, FreshnessClass.EVERGREEN, "compact")
+            query_id = storage.add_query(run_id, "round-one", "fake", FreshnessClass.EVERGREEN)
+            storage.add_search_results(
+                query_id, [{"title": "T", "url": "https://example.com/a", "snippet": "s"}]
+            )
+            source_id = storage.upsert_source(
+                run_id, "https://example.com/a", "A", None, None, "body", {}
+            )
+            storage.add_evidence_item(run_id, source_id, "excerpt", "note")
+
+            storage.discard_round(run_id, query_id)
+
+            with storage._connect() as connection:
+                queries = connection.execute(
+                    "SELECT COUNT(*) FROM research_queries WHERE run_id=?", (run_id,)
+                ).fetchone()[0]
+                results = connection.execute(
+                    "SELECT COUNT(*) FROM search_results WHERE query_id=?", (query_id,)
+                ).fetchone()[0]
+                links = connection.execute(
+                    "SELECT COUNT(*) FROM run_source_links WHERE run_id=?", (run_id,)
+                ).fetchone()[0]
+                evidence = connection.execute(
+                    "SELECT COUNT(*) FROM evidence_items WHERE run_id=?", (run_id,)
+                ).fetchone()[0]
+                # The shared source/document rows survive for cross-run reuse.
+                sources = connection.execute(
+                    "SELECT COUNT(*) FROM sources WHERE source_id=?", (source_id,)
+                ).fetchone()[0]
+
+        self.assertEqual(queries, 0)
+        self.assertEqual(results, 0)
+        self.assertEqual(links, 0)
+        self.assertEqual(evidence, 0)
+        self.assertEqual(sources, 1)
+
     def test_nested_transaction_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = SQLiteStorage(Path(tmpdir) / "magpie.db")

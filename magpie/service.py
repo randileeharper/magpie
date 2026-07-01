@@ -360,6 +360,10 @@ class ResearchService:
                 self._raise_if_cancelled(run_id)
                 self._trace(run_id, "SEARCH RESULTS", [f"query: {proposal.query}", f"result_count: {len(results)}"])
                 self._record_timing(timings, "search", elapsed)
+                # Persistence: the round's query, search results, discovered
+                # sources, fetches, and evidence selection all commit as one
+                # atomic unit. (Fetches themselves hold the lock across network
+                # I/O; narrowing that is tracked separately in #107.)
                 with self.storage.transaction():
                     query_id = self.storage.add_query(
                         run_id, query, self.settings.search_provider, freshness
@@ -407,20 +411,34 @@ class ResearchService:
                     if not round_evidence:
                         continue
                     ctx.evidence.extend(round_evidence)
+                # Synthesis makes an LLM/network call and must not run inside the
+                # SQLite write transaction; otherwise the write lock is held for
+                # the duration of the resolver round-trip (#83/#107). It runs
+                # here, after the round's persistence has committed. If it fails,
+                # a compensating cleanup discards the round's rows so a failed
+                # round leaves no query/source-link/evidence behind (matching the
+                # rollback behavior previously provided by the enclosing
+                # transaction), and the exception propagates to fail the run.
+                try:
                     ctx.last_draft = self._synthesize(run_id, request.question, round_evidence, ctx.last_draft, timings)
-                    if not ctx.last_draft.source_answers_question:
+                except BaseException:
+                    with self.storage.transaction():
+                        self.storage.discard_round(run_id, query_id)
+                    raise
+                if not ctx.last_draft.source_answers_question:
+                    with self.storage.transaction():
                         for item in round_evidence:
                             self.storage.reject_source_for_query(query, item.source_id)
                             self._record_source_rejected(
                                 run_id, item.source_id, query, "source_did_not_answer_question"
                             )
-                    ctx.remaining_questions = self._remaining_questions_after_quality(
-                        run_id, request, ctx
+                ctx.remaining_questions = self._remaining_questions_after_quality(
+                    run_id, request, ctx
+                )
+                if not ctx.remaining_questions:
+                    return self._finalize(
+                        run_id, request, ctx, StopReason.NEEDED_NEW_SEARCH, timings,
                     )
-                    if not ctx.remaining_questions:
-                        return self._finalize(
-                            run_id, request, ctx, StopReason.NEEDED_NEW_SEARCH, timings,
-                        )
 
             return self._finish_incomplete(
                 run_id, request, ctx, StopReason.BUDGET_EXHAUSTED, timings
